@@ -1,0 +1,132 @@
+# ==========================================================================
+#  Dữ liệu khi chạy thử — TUYỆT ĐỐI KHÔNG ĐƯA LÊN GITHUB
+#  data/profile/ chứa cookie đăng nhập Facebook.
+#  Nếu đã lỡ push, coi như mật khẩu bị lộ: đổi mật khẩu, đăng xuất khỏi
+#  mọi thiết bị, rồi xoá lịch sử git (xem README mục "Bảo mật").
+# ==========================================================================
+data/
+
+# File riêng của từng người
+.env
+.env.*
+!.env.example
+*.local
+
+# Kết quả xuất khi tự tay xuất ra
+*.csv
+*.xlsx
+*.xls
+export/
+output/
+exports/
+reports/
+
+# Ảnh chụp màn hình / tài liệu sinh tự động
+screenshot*.png
+ui_*.png
+*.log
+
+# ==========================================================================
+#  Python
+# ==========================================================================
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+# Môi trường ảo
+.venv/
+venv/
+env/
+ENV/
+.env.venv/
+
+# Cache
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.dmypy.json
+dmypy.json
+.pyre/
+.pytype/
+.benchmarks/
+.tox/
+.nox/
+.hypothesis/
+
+# Test coverage
+.coverage
+.coverage.*
+coverage.xml
+htmlcov/
+nosetests.xml
+*.cover
+
+# ==========================================================================
+#  Đóng gói / build
+# ==========================================================================
+build/
+dist/
+sdist/
+wheels/
+*.egg
+*.egg-info/
+*.egg
+.eggs/
+pip-wheel-metadata/
+__pypackages__/
+develop-eggs/
+.installed.cfg
+pip-log.txt
+Pipfile.lock
+poetry.lock
+uv.lock
+*.whl
+
+# ==========================================================================
+#  Editor / IDE
+# ==========================================================================
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+*.sublime-project
+*.sublime-workspace
+.spyderproject
+.ropeproject
+.nvim.lua
+.nvim/
+*.code-workspace
+
+# ==========================================================================
+#  Hệ điều hành
+# ==========================================================================
+# Windows
+Thumbs.db
+Thumbs.db:encryptable
+ehthumbs.db
+ehthumbs_vista.db
+Desktop.ini
+$RECYCLE.BIN/
+*.lnk
+*.stackdump
+*.cab
+
+# macOS
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+.fseventsd
+.TemporaryItems
+.AppleDouble
+.LSOverride
+Icon?
+
+# Linux
+.directory
+.Trash-*
+*~
+.nfs*

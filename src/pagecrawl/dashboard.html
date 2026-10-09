@@ -1,0 +1,448 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>pagecrawl</title>
+  <style>
+    :root { color-scheme: light; }
+    * { box-sizing: border-box; }
+    body { margin: 0; font: 15px/1.45 "Segoe UI", sans-serif; background: #f4f5f7; color: #1c1e21; }
+    header { position: sticky; top: 0; background: #fff; border-bottom: 1px solid #ddd; padding: 14px 18px; z-index: 2; }
+    h1 { margin: 0 0 8px; font-size: 18px; }
+    .row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+    button { border: 0; border-radius: 6px; padding: 8px 12px; font: inherit; cursor: pointer; }
+    button:disabled { opacity: 0.45; cursor: default; }
+    #start, #open { background: #1877f2; color: #fff; }
+    #stop { background: #e4e6eb; }
+    form { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-top: 10px; }
+    form[hidden] { display: none !important; }
+    input[type=url], input[type=number] { padding: 8px 10px; border: 1px solid #ccc; border-radius: 6px; font: inherit; }
+    input[type=url] { flex: 1; min-width: 240px; }
+    input[type=number] { width: 72px; }
+    .opt { display: flex; gap: 6px; align-items: center; color: #444; }
+    .badge { padding: 2px 8px; border-radius: 999px; background: #e4e6eb; }
+    .badge.running { background: #d6f5d6; }
+    .badge.waiting_login { background: #fff3cd; }
+    .badge.done { background: #dbe7ff; }
+    .badge.error, .badge.stalled { background: #ffd6d6; }
+    .stats { display: flex; flex-wrap: wrap; gap: 14px; margin-top: 8px; color: #444; }
+    main { display: grid; grid-template-columns: 280px 1fr; gap: 16px; padding: 16px; }
+    aside, article { background: #fff; border: 1px solid #e3e5e8; border-radius: 10px; }
+    aside { padding: 12px; }
+    pre { white-space: pre-wrap; word-break: break-word; margin: 8px 0 0; font: 12px/1.4 ui-monospace, monospace; max-height: 50vh; overflow: auto; }
+    #tools { padding: 12px 16px 0; display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+    input[type=search] { width: min(420px, 100%); padding: 8px 10px; border: 1px solid #ccc; border-radius: 6px; font: inherit; }
+    select, input[type=text] { padding: 8px 10px; border: 1px solid #ccc; border-radius: 6px; font: inherit; }
+    #create-collection { background: #42b72a; color: #fff; }
+    #list { display: flex; flex-direction: column; gap: 12px; padding: 12px 16px 24px; }
+    .card { padding: 14px; }
+    .card header { position: static; padding: 0; border: 0; display: flex; justify-content: space-between; gap: 8px; }
+    .meta { color: #65676b; font-size: 13px; }
+    .counts { display: flex; gap: 12px; color: #444; font-size: 13px; margin: 8px 0; }
+    .text { white-space: pre-wrap; }
+    .images { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 8px; }
+    .images img { max-height: 160px; max-width: 220px; border-radius: 6px; background: #eee; }
+    .tag { font-size: 12px; background: #eee; border-radius: 999px; padding: 2px 8px; }
+    .permalink { display: inline-block; margin-top: 4px; font-size: 13px; color: #1877f2; text-decoration: none; }
+    .permalink:hover { text-decoration: underline; }
+    .permalink[hidden] { display: none; }
+    .empty { color: #65676b; }
+    @media (max-width: 800px) { main { grid-template-columns: 1fr; } }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>pagecrawl</h1>
+    <div class="row">
+      <span id="status" class="badge">starting</span>
+      <span id="session"></span>
+      <button id="start" disabled>Bắt đầu crawl</button>
+      <button id="stop">Dừng</button>
+    </div>
+    <form id="job" hidden>
+      <input id="page-url" type="url" placeholder="https://site-cua-ban/page/..." required>
+      <label class="opt"><input id="refresh" type="checkbox"> Cập nhật bài đã lưu nếu nội dung đổi</label>
+      <label class="opt">Chờ mỗi vòng <input id="idle" type="number" min="1" max="60" value="8"> giây</label>
+      <label class="opt" title="headless = chạy ẩn, fingerprint gần giống bản thường">Trình duyệt
+        <select id="mode">
+          <option value="1">Ẩn (headless)</option>
+          <option value="0">Hiện cửa sổ</option>
+        </select>
+      </label>
+      <button id="open" type="submit">Mở trang</button>
+    </form>
+    <div class="stats">
+      <span id="url"></span>
+      <span>Mới <b id="new">0</b></span>
+      <span>Cập nhật <b id="updated">0</b></span>
+      <span>Bỏ qua <b id="skip">0</b></span>
+      <span>Vòng <b id="rounds">0</b></span>
+      <span>Đã lưu <b id="total">0</b></span>
+      <span id="reason"></span>
+    </div>
+  </header>
+  <div id="tools">
+    <input id="q" type="search" placeholder="Tìm theo tên hoặc nội dung">
+    <label class="opt">Collection <select id="collection"></select></label>
+    <input id="new-collection" type="text" placeholder="tên collection mới">
+    <button id="create-collection">Tạo &amp; chọn</button>
+    <button id="delete-collection" title="Xóa collection đang chọn">Xóa</button>
+  </div>
+  <main>
+    <aside>
+      <strong>Nhật ký</strong>
+      <pre id="log"></pre>
+    </aside>
+    <section>
+      <div id="list"></div>
+    </section>
+  </main>
+  <script>
+    const statusLabels = {
+      idle: "sẵn sàng",
+      opening: "đang mở trang",
+      starting: "đang mở",
+      waiting_login: "đang chờ đăng nhập",
+      running: "đang crawl",
+      stalled: "đang chờ bài mới",
+      done: "xong",
+      error: "lỗi"
+    };
+    const reasons = {
+      cursor_empty: "hết cursor",
+      no_new_posts: "không còn bài mới",
+      user_stop: "đã dừng",
+      rate_limited: "bị giới hạn tốc độ — nghỉ một lát rồi chạy lại",
+      login_required: "Facebook yêu cầu đăng nhập lại",
+    };
+    const cards = new Map();
+    let pageUrl = "";
+    let query = "";
+    let collectionId = 0;
+
+    const statusEl = document.querySelector("#status");
+    const startBtn = document.querySelector("#start");
+    const stopBtn = document.querySelector("#stop");
+    const jobForm = document.querySelector("#job");
+    const urlInput = document.querySelector("#page-url");
+    const refreshInput = document.querySelector("#refresh");
+    const idleInput = document.querySelector("#idle");
+    const modeSel = document.querySelector("#mode");
+    const collectionSel = document.querySelector("#collection");
+    const newCollectionInput = document.querySelector("#new-collection");
+    const createCollectionBtn = document.querySelector("#create-collection");
+    const deleteCollectionBtn = document.querySelector("#delete-collection");
+    const busyStatuses = new Set(["starting", "opening", "waiting_login", "running", "stalled"]);
+
+    function applyStatus(data) {
+      const nextUrl = data.page_url || "";
+      const urlChanged = nextUrl !== pageUrl;
+      pageUrl = nextUrl;
+      statusEl.textContent = statusLabels[data.status] || data.status || "sẵn sàng";
+      statusEl.className = "badge " + (data.status || "");
+      document.querySelector("#url").textContent = pageUrl;
+      document.querySelector("#new").textContent = data.new_count || 0;
+      document.querySelector("#updated").textContent = data.updated_count || 0;
+      document.querySelector("#skip").textContent = data.skip_count || 0;
+      document.querySelector("#rounds").textContent = data.rounds || 0;
+      const reason = reasons[data.stop_reason] || data.stop_reason || "";
+      document.querySelector("#reason").textContent = reason ? "Lý do dừng: " + reason : "";
+      const session = document.querySelector("#session");
+      if (data.status === "waiting_login") {
+        session.textContent = data.session_ready
+          ? "session còn — bấm Bắt đầu crawl"
+          : "đăng nhập trên cửa sổ Chromium, rồi bấm Bắt đầu crawl";
+      } else if (data.status === "idle") {
+        session.textContent = "dán link page rồi bấm Mở trang";
+      } else if (data.session_ready) {
+        session.textContent = "session còn";
+      } else if (data.status === "opening") {
+        session.textContent = "đang mở Chromium";
+      } else {
+        session.textContent = "";
+      }
+      const busy = busyStatuses.has(data.status);
+      startBtn.disabled = data.status !== "waiting_login";
+      collectionSel.disabled = busy;
+      newCollectionInput.disabled = busy;
+      createCollectionBtn.disabled = busy;
+      deleteCollectionBtn.disabled = busy || !collectionId || collectionId === 1;
+      if (data.collection_id && Number(collectionSel.value) !== Number(data.collection_id)) {
+        if ([...collectionSel.options].some((o) => Number(o.value) === Number(data.collection_id))) {
+          collectionSel.value = String(data.collection_id);
+          collectionId = Number(data.collection_id);
+          loadPosts();
+        }
+      }
+      if (data.controls) {
+        stopBtn.disabled = !busy;
+        jobForm.hidden = false;
+        urlInput.disabled = busy;
+        refreshInput.disabled = busy;
+        idleInput.disabled = busy;
+        modeSel.disabled = busy;
+        document.querySelector("#open").disabled = busy;
+        if (pageUrl && document.activeElement !== urlInput) urlInput.value = pageUrl;
+        if (document.activeElement !== refreshInput) refreshInput.checked = !!data.refresh;
+        if (data.idle_timeout && document.activeElement !== idleInput) idleInput.value = data.idle_timeout;
+        if (typeof data.headless === "boolean" && !modeTouched && document.activeElement !== modeSel) {
+          modeSel.value = data.headless ? "1" : "0";
+        }
+      } else {
+        stopBtn.disabled = data.status === "starting";
+        jobForm.hidden = true;
+      }
+      if (Array.isArray(data.logs)) document.querySelector("#log").textContent = data.logs.join("\n");
+      if (urlChanged) loadPosts();
+    }
+
+    function card(post, flags) {
+      const el = document.createElement("article");
+      el.className = "card";
+      el.id = "post-" + post.post_id;
+      const when = [post.created_at, post.time_label].filter(Boolean).join(" · ");
+      el.innerHTML = `
+        <header>
+          <div>
+            <strong class="author"></strong>
+            <div class="meta time"></div>
+            <a class="permalink" target="_blank" rel="noreferrer">Xem bài trên Facebook</a>
+          </div>
+          <span class="tag flag"></span>
+        </header>
+        <div class="counts"></div>
+        <div class="text"></div>
+        <div class="images"></div>`;
+      fill(el, post, flags);
+      return el;
+    }
+
+    function fill(el, post, flags) {
+      el.querySelector(".author").textContent = post.author || "(không tên)";
+      el.querySelector(".time").textContent = [post.created_at, post.time_label].filter(Boolean).join(" · ");
+      el.querySelector(".counts").textContent = "Like " + post.like_count + " · Bình luận " + post.comment_count;
+      const link = el.querySelector(".permalink");
+      if (post.permalink) {
+        link.href = post.permalink;
+        link.hidden = false;
+        link.textContent = "Xem bài trên Facebook";
+      } else {
+        link.hidden = true;
+        link.removeAttribute("href");
+        link.textContent = "";
+      }
+      el.querySelector(".text").textContent = post.text || "";
+      const flag = el.querySelector(".flag");
+      flag.textContent = flags && flags.skipped ? "đã có" : (flags && flags.updated ? "đã cập nhật" : "");
+      const box = el.querySelector(".images");
+      box.replaceChildren();
+      const urls = post.image_urls || [];
+      if (!urls.length) {
+        const note = document.createElement("span");
+        note.className = "empty";
+        note.textContent = "không có ảnh";
+        box.appendChild(note);
+        return;
+      }
+      for (const url of urls) {
+        const link = document.createElement("a");
+        link.href = url;
+        link.target = "_blank";
+        link.rel = "noreferrer";
+        const img = document.createElement("img");
+        img.src = url;
+        img.alt = "";
+        link.appendChild(img);
+        box.appendChild(link);
+      }
+    }
+
+    function upsert(post, flags) {
+      let el = cards.get(post.post_id);
+      if (!el) {
+        const empty = document.querySelector("#list .empty");
+        if (empty) empty.remove();
+        el = card(post, flags);
+        cards.set(post.post_id, el);
+        document.querySelector("#list").prepend(el);
+        return;
+      }
+      fill(el, post, flags);
+    }
+
+    async function loadCollections() {
+      const response = await fetch("/api/collections");
+      const data = await response.json();
+      collectionId = Number(data.current) || 0;
+      collectionSel.replaceChildren();
+      for (const col of data.collections) {
+        const option = document.createElement("option");
+        option.value = col.id;
+        option.textContent = `${col.name} (${col.post_count})`;
+        collectionSel.appendChild(option);
+      }
+      collectionSel.value = String(data.current);
+    }
+
+    async function loadPosts() {
+      const params = new URLSearchParams({ q: query, limit: "50" });
+      const response = await fetch("/api/posts?" + params.toString());
+      const data = await response.json();
+      document.querySelector("#total").textContent = data.total;
+      const list = document.querySelector("#list");
+      list.replaceChildren();
+      cards.clear();
+      if (!data.posts.length) {
+        const note = document.createElement("p");
+        note.className = "empty";
+        note.textContent = "Chưa có bài";
+        list.appendChild(note);
+        return;
+      }
+      for (const post of data.posts.slice().reverse()) upsert(post, null);
+    }
+
+    let modeTouched = false;
+    modeSel.onchange = () => {
+      modeTouched = true;
+      try {
+        localStorage.setItem("pagecrawl:headless", modeSel.value);
+      } catch (err) { /* private mode: bỏ qua */ }
+    };
+    try {
+      const savedMode = localStorage.getItem("pagecrawl:headless");
+      if (savedMode === "0" || savedMode === "1") {
+        modeSel.value = savedMode;
+        modeTouched = true;
+      }
+    } catch (err) { /* private mode: bỏ qua */ }
+
+    jobForm.onsubmit = async (event) => {
+      event.preventDefault();
+      const response = await fetch("/api/open", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          url: urlInput.value.trim(),
+          refresh: refreshInput.checked,
+          idle_timeout: Number(idleInput.value || 8),
+          headless: modeSel.value === "1"
+        })
+      });
+      if (!response.ok) {
+        const body = await response.json().catch(() => ({}));
+        const detail = body.detail;
+        alert(typeof detail === "string" ? detail : "không mở được trang");
+      }
+    };
+    startBtn.onclick = async () => {
+      const response = await fetch("/api/start", { method: "POST" });
+      if (!response.ok) {
+        const body = await response.json().catch(() => ({}));
+        alert(body.detail || "không bắt đầu được");
+      }
+    };
+    stopBtn.onclick = () => fetch("/api/stop", { method: "POST" });
+    collectionSel.onchange = async () => {
+      const response = await fetch("/api/select", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ collection_id: Number(collectionSel.value) })
+      });
+      if (!response.ok) {
+        const body = await response.json().catch(() => ({}));
+        alert(body.detail || "không đổi được collection");
+        await loadCollections();
+        return;
+      }
+      collectionId = Number(collectionSel.value);
+      await loadCollections();
+      await loadPosts();
+    };
+    createCollectionBtn.onclick = async () => {
+      const name = newCollectionInput.value.trim();
+      if (!name) return;
+      const create = await fetch("/api/collections", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name })
+      });
+      if (!create.ok) {
+        const body = await create.json().catch(() => ({}));
+        alert(body.detail || "không tạo được collection");
+        return;
+      }
+      const created = await create.json();
+      const select = await fetch("/api/select", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ collection_id: created.collection.id })
+      });
+      if (!select.ok) {
+        await loadCollections();
+        return;
+      }
+      collectionId = Number(created.collection.id);
+      newCollectionInput.value = "";
+      await loadCollections();
+      await loadPosts();
+    };
+    deleteCollectionBtn.onclick = async () => {
+      if (!collectionId || collectionId === 1) return;
+      const name = collectionSel.options[collectionSel.selectedIndex]?.textContent || "";
+      if (!confirm(`Xóa collection "${name}"? Tất cả bài trong collection sẽ bị xóa.`)) return;
+      const response = await fetch("/api/collections/" + collectionId, { method: "DELETE" });
+      if (!response.ok) {
+        const body = await response.json().catch(() => ({}));
+        alert(body.detail || "không xóa được collection");
+        return;
+      }
+      collectionId = 1;
+      await loadCollections();
+      await loadPosts();
+    };
+    document.querySelector("#q").oninput = (event) => {
+      query = event.target.value.trim();
+      clearTimeout(window._searchTimer);
+      window._searchTimer = setTimeout(loadPosts, 200);
+    };
+
+    function onEvent(data) {
+      if (data.type === "status") applyStatus(data);
+      else if (data.type === "log") {
+        const log = document.querySelector("#log");
+        log.textContent += (log.textContent ? "\n" : "") + data.line;
+      } else if (data.type === "post") {
+        if (query) {
+          loadPosts();
+          return;
+        }
+        if (data.post.collection_id && Number(data.post.collection_id) !== Number(collectionId)) return;
+        const known = cards.has(data.post.post_id);
+        upsert(data.post, data);
+        if (!query && !known && !data.skipped) {
+          const total = document.querySelector("#total");
+          total.textContent = String(Number(total.textContent || "0") + 1);
+        }
+
+      }
+    }
+
+    async function boot() {
+      const response = await fetch("/api/state");
+      const data = await response.json();
+      applyStatus(data);
+      await loadCollections();
+      await loadPosts();
+      const source = new EventSource("/api/events");
+      source.onmessage = (event) => onEvent(JSON.parse(event.data));
+      source.onerror = () => {
+        source.close();
+        setTimeout(boot, 2000);
+      };
+    }
+    boot();
+  </script>
+</body>
+</html>
