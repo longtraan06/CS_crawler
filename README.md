@@ -186,6 +186,23 @@ Thêm `--limit 5` để chỉ lấy 5 bài, `--headed` để hiện cửa sổ t
 - Bài nào lỗi sẽ ghi `comments_status = error`, lần sau chạy lại thử tiếp.
 - **Xoá và lấy lại:** bấm **Xoá tất cả** rồi **Lấy bình luận**.
 
+### Tốc độ và độ đầy đủ
+
+Facebook đôi khi chỉ nạp một phần bình luận trong lần mở trang đầu. Tool tải
+lại trang tối đa `--retries` lần (mặc định 2) và gộp kết quả, nên càng thử lại
+nhiều càng đầy đủ nhưng càng lâu:
+
+| `--retries` | Thời gian mỗi bài | Bình luận lấy được |
+|---|---|---|
+| `0` | khoảng 16 giây | ít hơn một chút |
+| `1` | khoảng 24 giây | nhiều hơn |
+| `2` (mặc định) | khoảng 30 giây | nhiều nhất |
+
+Cần nhanh thì dùng `--retries 0`, chạy lại sau cũng được.
+
+Nhịp nghỉ giữa các bài **tự điều chỉnh**: bình thường nghỉ ít, gặp dấu hiệu bất
+thường hoặc bị chặn thì nghỉ dài hơn. Luôn có nghỉ, không bao giờ cuộn liên tục.
+
 ### Tool lấy được gì
 
 Mỗi bình luận lưu: tác giả, nội dung, thời gian, số thích, `comment_id` của
@@ -193,9 +210,20 @@ Facebook, và bình luận cha (nếu là trả lời).
 
 Bình luận bị Facebook ẩn sẽ bị bỏ qua.
 
-**Hạn chế:** số bình luận Facebook hiển thị có thể không khớp số thực tế, và đôi khi
-Facebook chỉ nạp một phần. Tool có tự thử lại 3 lần rồi gộp kết quả, nên số lưu
-được có thể ít hơn con số Facebook báo. Muốn thử lại thì **Xoá tất cả** rồi chạy lại.
+**Hai kiểu trang đều chạy được:**
+
+| Kiểu trang | Ví dụ | Cách hiển thị |
+|---|---|---|
+| Bài trong nhóm, bài thường | `.../posts/pfbid...` | bài mở trong hộp thoại, bình luận bên trong |
+| **Bài ảnh** | `.../photo/?fbid=...` | không có hộp thoại, ảnh bên trái, bình luận ở **cột phải** |
+
+**Lưu ý về con số của Facebook:** số bình luận Facebook hiển thị có thể **không phải**
+số bình luận thật. Ví dụ một bài ảnh ghi `123` nhưng trang xem ảnh chỉ mở được 37
+bình luận (6 bình luận gốc + 31 trả lời, tính từ các nút "Xem N câu trả lời").
+Tool lấy đủ những gì trang đó cho hiện — đã đối chiếu 37/37, không sót.
+
+Bình luận bị Facebook **ẩn** thì bỏ qua. Bình luận **trống** (chỉ có avatar, không
+có chữ) vẫn được giữ lại với nội dung rỗng.
 
 ---
 

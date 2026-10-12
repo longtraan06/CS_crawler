@@ -97,6 +97,11 @@ def comments(
     profile: Path = typer.Option(_profile_option(), "--profile"),
     headless: bool = typer.Option(True, "--headless/--headed", help="Ẩn cửa sổ hay hiện cửa sổ Chromium"),
     limit: int = typer.Option(0, "--limit", help="Giới hạn số bài (0 = hết cả collection)"),
+    retries: int = typer.Option(
+        2,
+        "--retries",
+        help="Số lần tải lại bài khi chưa lấy đủ. 0 = nhanh nhất nhưng thiếu bình luận.",
+    ),
 ) -> None:
     """Lấy bình luận của các bài đã crawl trong một collection.
 
@@ -131,6 +136,7 @@ def comments(
                     collection_id=collection_id,
                     min_comments=min_comments,
                     limit=limit or None,
+                    retries=retries,
                     on_progress=typer.echo,
                 )
             finally:

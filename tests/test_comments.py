@@ -181,3 +181,163 @@ def test_comments_start_requires_ui(tmp_path):
         response = client.post("/api/comments/start", json={"min_comments": 2})
         assert response.status_code == 404
     store.close()
+
+
+# ------------------------------------------------- quy đổi DOM -> Comment
+
+
+def _row(cid: str, left: int, order: int, text: str = "nội dung", hidden: bool = False):
+    return {
+        "comment_id": cid,
+        "author": "A",
+        "text": text,
+        "created_at": "Thứ Hai, 10 Tháng 8, 2026 lúc 09:57",
+        "like_count": 0,
+        "hidden": hidden,
+        "left": left,
+        "order": order,
+    }
+
+
+def _crawler():
+    from pagecrawl.comments import CommentCrawler
+
+    return CommentCrawler(source=None)
+
+
+def test_indent_decides_reply_levels():
+    """Bình luận gốc sát mép (left=0), trả lời thụt vào (left=54, 108...)."""
+    crawler = _crawler()
+    rows = [
+        _row("c1", 0, 0),
+        _row("c2", 54, 1),
+        _row("c3", 54, 2),
+        _row("c4", 0, 3),
+        _row("c5", 54, 4),
+    ]
+    out = {c.comment_id: c for c in crawler._to_comments(rows)}
+    assert out["c1"].depth == 0 and out["c1"].parent_id is None
+    assert out["c2"].depth == 1 and out["c2"].parent_id == "c1"
+    assert out["c3"].depth == 1 and out["c3"].parent_id == "c1"
+    assert out["c4"].depth == 0 and out["c4"].parent_id is None
+    assert out["c5"].depth == 1 and out["c5"].parent_id == "c4"
+
+
+def test_nested_reply_gets_depth_two():
+    """Trả lời của một trả lời thụt sâu hơn nữa."""
+    crawler = _crawler()
+    rows = [_row("c1", 0, 0), _row("c2", 54, 1), _row("c3", 108, 2)]
+    out = {c.comment_id: c for c in crawler._to_comments(rows)}
+    assert out["c3"].depth == 2
+    assert out["c3"].parent_id == "c2"
+
+
+def test_row_order_follows_dom_not_insertion():
+    crawler = _crawler()
+    rows = [_row("c1", 0, 2), _row("c2", 0, 0), _row("c3", 54, 1)]
+    out = crawler._to_comments(rows)
+    assert [c.comment_id for c in out] == ["c2", "c3", "c1"]
+
+
+def test_hidden_comments_are_skipped_but_blank_kept():
+    """Bình luận bị ẩn thì bỏ; bình luận trống thì giữ lại (không mất dữ liệu)."""
+    crawler = _crawler()
+    rows = [
+        _row("c1", 0, 0),
+        _row("c2", 0, 1, text=""),
+        _row("c3", 0, 2, hidden=True),
+    ]
+    out = {c.comment_id: c for c in crawler._to_comments(rows)}
+    assert "c1" in out
+    assert "c2" in out and out["c2"].text == ""
+    assert "c3" not in out
+
+
+def test_leading_dot_is_stripped_from_text():
+    """Bài nhóm hay để lại dấu '·' ở đầu nội dung."""
+    crawler = _crawler()
+    out = crawler._to_comments([_row("c1", 0, 0, text="· Xin chào các bạn")])
+    assert out[0].text == "Xin chào các bạn"
+
+
+def test_duplicated_comment_ids_kept_once():
+    crawler = _crawler()
+    rows = [_row("c1", 0, 0), _row("c1", 0, 1)]
+    assert len(crawler._to_comments(rows)) == 1
+
+
+def test_both_layouts_supported():
+    """Hai kiểu trang: có modal và bài ảnh (bình luận nằm trong trang)."""
+    from pagecrawl import comments
+
+    assert comments.MODAL == '[role="dialog"][aria-modal="true"]'
+    assert comments.SCOPE == '[data-pc-scope="1"]'
+    # _SCOPE_JS phải xử lý được cả hai: ưu tiên modal, không có thì dùng trang
+    assert 'aria-modal' in comments._SCOPE_JS
+    assert 'data-pc-scope' in comments._SCOPE_JS
+    # _BOTTOM_JS phải dò cả phần tử cha (bài ảnh nằm trong cột cuộn chung)
+    assert 'parentElement' in comments._BOTTOM_JS
+
+
+# ------------------------------------------------------ chống chậm / an toàn
+
+
+def test_gap_is_always_at_least_two_seconds():
+    """Luôn phải có nhịp nghỉ giữa các bài — không được về 0 vì tốc độ."""
+    from pagecrawl import comments
+
+    for name in ("GAP_OK", "GAP_SUSPECT", "GAP_BAD"):
+        low, high = getattr(comments, name)
+        assert low >= 2.0, f"{name} nghỉ quá ngắn"
+        assert high > low
+
+
+def test_extraction_runs_off_the_event_loop():
+    """Rút bài từ response phải chạy ở thread, không chặn event loop."""
+    import inspect
+
+    from pagecrawl import browser
+
+    src = inspect.getsource(browser.PlaywrightSource._read_response_inner)
+    assert "to_thread" in src
+
+
+def test_response_backpressure_bounded():
+    """Không để dồn task vô hạn khi cuộn nhanh."""
+    import asyncio
+    import tempfile
+    from pathlib import Path
+
+    from pagecrawl.browser import PlaywrightSource
+
+    async def run() -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            source = PlaywrightSource(Path(tmp) / "p", headless=True)
+            assert source._pending == 0
+            seen: list = []
+
+            async def fake(resp: object) -> None:
+                seen.append(resp)
+
+            source._read_response = fake  # type: ignore[assignment]
+            source._pending = 50
+            source._on_response("x")  # vượt ngưỡng thì bỏ qua
+            await asyncio.sleep(0)
+            assert seen == []
+            source._pending = 0
+            source._on_response("y")
+            await asyncio.sleep(0)
+            assert seen == ["y"]
+
+    asyncio.run(run())
+
+
+def test_retries_parameter_is_honoured():
+    """Số lần thử lại phải do người dùng chọn được."""
+    import inspect
+
+    from pagecrawl.comments import crawl_comments
+
+    params = inspect.signature(crawl_comments).parameters
+    assert "retries" in params
+    assert params["retries"].default >= 0

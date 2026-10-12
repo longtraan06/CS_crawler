@@ -1,19 +1,24 @@
 """Crawl bình luận của một bài viết bằng cách mở trực tiếp permalink.
 
-Facebook hiển thị bài trong một modal (dialog). Bên trong modal có nút sắp xếp
-bình luận, mặc định là "Phù hợp nhất" — chế độ này chỉ hiện bình luận của bạn bè
-và bình luận nhiều tương tác. Muốn lấy hết phải đổi sang "Tất cả bình luận".
+Facebook có hai kiểu trang bài, và tool xử lý cả hai:
 
-Ba điểm quan trọng đã kiểm chứng trên bài thật:
+1. **Bài trong nhóm / bài thường** — mở permalink thì bài hiện trong một modal
+   (dialog), bình luận nằm bên trong modal.
+2. **Bài ảnh** (``/photo/?fbid=...``) — không có modal. Ảnh chiếm cột trái,
+   phần bình luận nằm ở **cột phải** ngay trong trang.
 
-1. Modal bài viết là ``[role="dialog"][aria-modal="true"]``. Trang có tới hai
-   phần tử ``role="dialog"``; chọn sai sẽ thao tác nhầm lên trang nền.
-2. Phải cuộn bằng ``mouse.wheel`` với con trỏ đặt *bên trong* modal. Cuộn mặc
-   định sẽ cuộn trang nền; gán thẳng ``scrollTop`` chỉ tải được một đợt rồi dừng.
-3. Reply nằm *ngang hàng* với bình luận gốc trong DOM, phân biệt bằng class
-   hash sẽ bị đổi theo phiên bản Facebook. Cách ổn định là đo trước/sau: ghi
-   danh sách id hiện có, bấm nút "Xem N câu trả lời", rồi các id mới xuất hiện
-   ngay sau bình luận cha chính là nhóm trả lời của nó.
+Vì vậy thay vì cố định selector modal, tool **đánh dấu vùng chứa bình luận** bằng
+thuộc tính tạm ``data-pc-scope`` rồi mọi truy vấn đều đi qua nó. Cách đánh dấu:
+có modal thì lấy modal; không có thì lấy phần tử nhỏ nhất chứa toàn bộ bình luận.
+
+Điểm quan trọng đã kiểm chứng trên bài thật:
+
+- Mặc định Facebook sắp xếp bình luận theo "Phù hợp nhất" (chỉ hiện bình luận bạn
+  bè và bình luận nhiều tương tác). Muốn lấy hết phải đổi sang **"Tất cả bình luận"**.
+- Phải cuộn bằng ``mouse.wheel`` với con trỏ đặt *bên trong* vùng bình luận.
+- Reply nằm *ngang hàng* với bình luận gốc trong DOM, phân biệt bằng class hash
+  sẽ bị đổi theo phiên bản Facebook. Cách ổn định là dựa vào **mức thụt lề**.
+- Facebook **gỡ bỏ** bình luận đã cuộn qua khỏi DOM, nên phải gộp kết quả mọi vòng.
 """
 
 import asyncio
@@ -25,6 +30,8 @@ from typing import Any, Callable
 from pagecrawl.models import Comment
 
 MODAL = '[role="dialog"][aria-modal="true"]'
+# Selector của vùng chứa bình luận (được gắn động bởi _SCOPE_JS).
+SCOPE = '[data-pc-scope="1"]'
 
 # Nhãn dùng để đổi chế độ sắp xếp bình luận.
 SORT_CURRENT = ("Phù hợp nhất", "Mới nhất", "Tất cả bình luận", "Most relevant", "All comments")
@@ -54,6 +61,48 @@ async def page_wait(page: Any, ms: int) -> None:
         await page.wait_for_timeout(ms)
     except Exception:
         await asyncio.sleep(ms / 1000)
+
+
+# Nhãn sắp xếp hiện tại (nằm trong vùng bình luận, hoặc cả trang với bài ảnh).
+_SORT_LABEL_JS = """(sel) => {
+  const scope = document.querySelector(sel);
+  const read = (root) => [...root.querySelectorAll('[role="button"]')]
+    .map((b) => (b.innerText || '').trim())
+    .filter((t) => /Phù hợp nhất|Tất cả bình luận|Mới nhất/.test(t));
+  if (scope) {
+    const hit = read(scope);
+    if (hit.length) return hit[0];
+  }
+  const all = read(document);
+  return all.length ? all[0] : '';
+}"""
+
+# Đánh dấu vùng chứa bình luận. Có modal thì lấy modal; không có (bài ảnh) thì lấy
+# phần tử nhỏ nhất chứa toàn bộ bình luận — cột phải của trang xem ảnh.
+_SCOPE_JS = """() => {
+  document.querySelectorAll('[data-pc-scope]').forEach((n) => n.removeAttribute('data-pc-scope'));
+  const modal = document.querySelector('[role="dialog"][aria-modal="true"]');
+  if (modal) {
+    modal.setAttribute('data-pc-scope', '1');
+    return {layout: 'modal', n: -1};
+  }
+  const marked = %s;
+  const all = [...document.querySelectorAll('[role="article"]')].filter(marked);
+  const leaves = all.filter((a) => ![...a.querySelectorAll('[role="article"]')].some(marked));
+  // Cần tối thiểu 2 bình luận: nếu mới hiện đúng 1 bình luận thì phần tử nhỏ nhất
+  // chứa nó chính là nó, đánh dấu vào đó sẽ thu hẹp scope quá mức.
+  if (leaves.length < 2) return {layout: '', n: leaves.length};
+  let node = leaves[0];
+  while (
+    node.parentElement &&
+    node.parentElement !== document.documentElement &&
+    !leaves.every((l) => node.contains(l))
+  ) {
+    node = node.parentElement;
+  }
+  node.setAttribute('data-pc-scope', '1');
+  return {layout: 'page', n: leaves.length};
+}"""
 
 
 # Liệt kê bình luận: chỉ lấy ô "lá" để loại chính bài viết và các ô bao bọc.
@@ -125,43 +174,33 @@ _LIST_JS = """(sel) => {
   return { rows, total_articles: all.length };
 }"""
 
-# Đã cuộn tới cuối phần bình luận chưa.
+# Đã cuộn tới cuối phần bình luận chưa. Vùng cuộn có thể nằm bên trong scope
+# (bài trong modal) hoặc là phần tử cha của scope (bài ảnh: cột phải cuộn chung
+# với cả trang), nên phải dò từ scope lên tới body.
 _BOTTOM_JS = """(sel) => {
-  const dlg = document.querySelector(sel);
-  if (!dlg) return true;
-  let best = null;
-  dlg.querySelectorAll('div').forEach((d) => {
-    if (d.scrollHeight > d.clientHeight + 100 && (!best || d.scrollHeight > best.scrollHeight)) best = d;
-  });
-  if (!best) return true;
-  return best.scrollTop + best.clientHeight >= best.scrollHeight - 40;
-}"""
-
-
-# Đánh dấu thứ tự ô bình luận để bấm nút mở trả lời đúng chỗ.
-_TAGS_JS = """(sel) => {
-  const dlg = document.querySelector(sel);
-  if (!dlg) return [];
-  const marked = %s;
-  const all = [...document.querySelectorAll('[role="article"]')];
-  const out = [];
-  all.forEach((a, idx) => {
-    if (!marked(a)) return;
-    if ([...a.querySelectorAll('[role="article"]')].some(marked)) return;
-    const btn = [...a.querySelectorAll('[role="button"]')]
-      .find(b => /^Xem \\d+ (câu trả lời|phản hồi)/i.test((b.innerText || '').trim()));
-    if (!btn) return;
-    let id = '';
-    for (const link of a.querySelectorAll('a[href]')) {
-      const href = link.getAttribute('href') || '';
-      if (href.includes('comment_id=')) { id = href; break; }
+  const scope = document.querySelector(sel);
+  if (!scope) return true;
+  let node = scope;
+  while (node && node !== document.body) {
+    if (node.scrollHeight > node.clientHeight + 40) {
+      return node.scrollTop + node.clientHeight >= node.scrollHeight - 80;
     }
-    out.push({ idx, id });
-  });
-  return out;
+    node = node.parentElement;
+  }
+  const doc = document.scrollingElement || document.documentElement;
+  return doc.scrollTop + doc.clientHeight >= doc.scrollHeight - 80;
 }"""
 
-# Bấm mọi nút mở trả lời đang hiện (dùng khi không cần biết cha-con).
+
+# Còn nút mở trả lời đang gập không.
+_HAS_REPLY_BTN_JS = """(sel) => {
+  const scope = document.querySelector(sel);
+  if (!scope) return false;
+  return [...scope.querySelectorAll('[role="button"]')].some(
+    (b) => /^Xem \\d+ (câu trả lời|phản hồi)/i.test((b.innerText || '').trim()));
+}"""
+
+# Bấm mọi nút mở trả lời đang hiện trong vùng bình luận.
 _OPEN_ALL_REPLIES_JS = """(sel) => {
   const dlg = document.querySelector(sel);
   if (!dlg) return 0;
@@ -174,30 +213,21 @@ _OPEN_ALL_REPLIES_JS = """(sel) => {
   return n;
 }"""
 
-# Bấm nút mở trả lời của ô bình luận tại vị trí idx.
-_CLICK_REPLY_JS = """(pair) => {
-  const a = document.querySelectorAll('[role="article"]')[pair.idx];
-  if (!a) return false;
-  const btn = [...a.querySelectorAll('[role="button"]')]
-    .find(b => /^Xem \\d+ (câu trả lời|phản hồi)/i.test((b.innerText || '').trim()));
-  if (!btn) return false;
-  btn.click();
-  return true;
-}"""
-
 
 class CommentCrawler:
-    """Mở một bài và lấy hết bình luận (kể cả trả lời) bên trong modal.
+    """Mở một bài và lấy hết bình luận (kể cả trả lời).
 
-    Crawler dùng *tab riêng* thay vì tab đang mở feed: tab feed gắn handler bắt
-    response để lấy bài, mà vùng bình luận phun ra rất nhiều response khi cuộn —
-    chạy chung sẽ nghẽn. Tách tab cũng giữ nguyên trang feed cho người dùng.
+    Dùng *tab riêng* thay vì tab đang mở feed: tab feed gắn handler bắt response để
+    lấy bài, mà vùng bình luận phun ra rất nhiều response khi cuộn — chạy chung sẽ
+    nghẽn. Tách tab cũng giữ nguyên trang feed cho người dùng.
     """
 
     def __init__(self, source: Any, *, max_rounds: int = 40) -> None:
         self.source = source
         self.max_rounds = max_rounds
         self._page: Any = None
+        self.layout = ""
+        self.scope_comments = 0
 
     @property
     def page(self) -> Any:
@@ -223,32 +253,70 @@ class CommentCrawler:
 
     # ------------------------------------------------------------------ mở
 
+    async def _mark_scope(self) -> str:
+        """Đánh dấu vùng chứa bình luận. Trả về 'modal', 'page' hoặc rỗng."""
+        page = self.page
+        if page is None:
+            return ""
+        try:
+            info = await page.evaluate(_SCOPE_JS % _is_marked_js())
+        except Exception:
+            return ""
+        layout = str((info or {}).get("layout") or "")
+        self.scope_comments = int((info or {}).get("n") or 0)
+        if layout:
+            self.layout = layout
+        return layout
+
     async def open_post(self, permalink: str) -> bool:
         page = await self._ensure_page()
         if page is None:
             return False
         await page.goto(permalink, wait_until="domcontentloaded", timeout=60000)
-        await self._pause(2.5, 4.5)
-        try:
-            await page.wait_for_selector(MODAL, timeout=30000)
-        except Exception:
-            return False
 
-        # Phải chờ vùng bình luận dựng xong rồi mới đổi chế độ. Đổi sớm quá thì
+        # Chờ vùng bình luận dựng xong rồi mới đổi chế độ. Đổi sớm quá thì
         # Facebook giữ luôn cursor phân trang cũ, kết quả chỉ lấy được một phần
         # bình luận và không có nút "Xem N câu trả lời".
-        try:
-            await page.locator(MODAL).get_by_text(SORT_CURRENT[0], exact=True).first.wait_for(
-                state="visible", timeout=30000
-            )
-        except Exception:
+        #
+        # Chờ theo điều kiện chứ không ngủ cố định: vùng bình luận dựng xong thì
+        # đi tiếp ngay, không cần chờ hết thời gian đặt trước.
+        ready = False
+        for _ in range(40):
+            if await self._mark_scope():
+                try:
+                    await page.locator(SCOPE).wait_for(state="visible", timeout=700)
+                    ready = True
+                    break
+                except Exception:
+                    pass
+            await self._pause(0.4, 0.8)
+        if not ready:
             return False
-        await self._pause(2.0, 3.5)
 
         await self._switch_to_all_comments()
-        await self._pause(2.0, 3.0)
-        await self._move_mouse_into_modal()
+        # Chờ tới khi nhãn đổi sang "Tất cả bình luận" là được.
+        await self._wait_sort_changed()
+        # Facebook có thể vẽ lại vùng bình luận sau khi đổi chế độ.
+        await self._mark_scope()
+        await self._focus_scope()
         return True
+
+    async def _wait_sort_changed(self, timeout: float = 12.0) -> None:
+        """Chờ nhãn sắp xếp chuyển sang "Tất cả bình luận" (thay vì ngủ cứng)."""
+        page = self.page
+        if page is None:
+            return
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            try:
+                text = await page.evaluate(_SORT_LABEL_JS, SCOPE)
+            except Exception:
+                text = ""
+            if "Tất cả bình luận" in (text or ""):
+                # Cho Facebook một nhịp để vẽ lại danh sách bình luận.
+                await self._pause(0.6, 1.2)
+                return
+            await self._pause(0.4, 0.9)
 
     async def _switch_to_all_comments(self) -> None:
         """Đổi từ "Phù hợp nhất" sang "Tất cả bình luận" (bắt buộc)."""
@@ -256,30 +324,48 @@ class CommentCrawler:
         if page is None:
             return
         try:
-            label = await page.locator(MODAL).get_by_text(SORT_CURRENT[0], exact=True).first.inner_text(timeout=6000)
+            label = await page.locator(SCOPE).get_by_text(SORT_CURRENT[0], exact=True).first.inner_text(timeout=6000)
         except Exception:
-            return
+            # Bài ảnh: nút sắp xếp nằm ngoài vùng bình luận, tìm trong cả trang.
+            try:
+                label = await page.get_by_text(SORT_CURRENT[0], exact=True).first.inner_text(timeout=6000)
+            except Exception:
+                return
         if "Tất cả bình luận" in label:
             return  # đã ở chế độ cần lấy
         try:
-            await page.locator(MODAL).get_by_text(SORT_CURRENT[0], exact=True).first.click(timeout=10000)
+            try:
+                await page.locator(SCOPE).get_by_text(SORT_CURRENT[0], exact=True).first.click(timeout=10000)
+            except Exception:
+                await page.get_by_text(SORT_CURRENT[0], exact=True).first.click(timeout=10000)
             await self._pause(0.8, 1.6)
             await page.get_by_text("Tất cả bình luận", exact=True).first.click(timeout=10000)
             await self._pause(1.5, 2.5)
         except Exception:
             return
 
-    async def _move_mouse_into_modal(self) -> None:
+    async def _focus_scope(self) -> None:
+        """Đưa con trỏ chuột vào vùng bình luận để cuộn đúng chỗ.
+
+        Phải kẹp toạ độ vào trong khung nhìn: ở bài ảnh, cột bình luận nằm bên
+        phải và có thể thấp hơn màn hình — con trỏ nằm ngoài khung nhìn thì lệnh
+        cuộn không vào đâu cả.
+        """
         page = self.page
         if page is None:
             return
         try:
-            box = await page.locator(MODAL).bounding_box(timeout=8000)
+            box = await page.locator(SCOPE).bounding_box(timeout=8000)
         except Exception:
             return
         if not box:
             return
-        await page.mouse.move(box["x"] + box["width"] / 2, box["y"] + box["height"] / 2)
+        size = page.viewport_size or {"width": 1280, "height": 900}
+        x = box["x"] + box["width"] / 2
+        y = box["y"] + box["height"] / 2
+        x = max(12, min(x, size["width"] - 12))
+        y = max(12, min(y, size["height"] - 12))
+        await page.mouse.move(x, y)
 
     # -------------------------------------------------------------- đọc DOM
 
@@ -288,56 +374,51 @@ class CommentCrawler:
         if page is None:
             return []
         try:
-            data = await page.evaluate(_LIST_JS % _is_marked_js(), MODAL)
+            data = await page.evaluate(_LIST_JS % _is_marked_js(), SCOPE)
         except Exception:
             return []
         rows = data.get("rows") or []
         return rows
 
-    async def _tags(self) -> list[dict]:
-        page = self.page
-        if page is None:
-            return []
-        try:
-            return await page.evaluate(_TAGS_JS % _is_marked_js(), MODAL) or []
-        except Exception:
-            return []
-
-    async def _click_reply(self, idx: int) -> bool:
-        page = self.page
-        if page is None:
-            return False
-        try:
-            return bool(await page.evaluate(_CLICK_REPLY_JS, {"idx": idx}))
-        except Exception:
-            return False
-
     # ----------------------------------------------------------------- tải
 
-    async def _scroll(self) -> None:
+    async def _scroll(self, steps: int = 6) -> None:
         """Cuộn tới đáy vùng bình luận để Facebook nạp thêm.
 
-        Cuộn nhiều bước, mỗi bước chờ trình duyệt render xong rồi mới cuộn tiếp.
+        Mỗi bước chờ trình duyệt render xong rồi mới cuộn tiếp, nhưng nếu đã chạm
+        đáy thì dừng ngay — cuộn thêm chỉ tốn thời gian chứ không tải thêm được gì.
         """
         page = self.page
         if page is None:
             return
-        for _ in range(6):
+        for index in range(steps):
+            if index and await self._at_bottom():
+                return
             await page.mouse.wheel(0, random.randint(560, 700))
-            await page.wait_for_timeout(random.randint(300, 400))
+            await page.wait_for_timeout(random.randint(240, 340))
 
     async def _open_all_replies(self) -> int:
-        """Bấm mọi nút "Xem N câu trả lời" đang có trong modal."""
+        """Bấm mọi nút "Xem N câu trả lời" đang có trong vùng bình luận."""
         page = self.page
         if page is None:
             return 0
         try:
-            clicked = int(await page.evaluate(_OPEN_ALL_REPLIES_JS, MODAL))
+            clicked = int(await page.evaluate(_OPEN_ALL_REPLIES_JS, SCOPE))
         except Exception:
             return 0
         if clicked:
             await page.wait_for_timeout(random.randint(1200, 1600))
         return clicked
+
+    async def _has_collapsed_replies(self) -> bool:
+        """Còn nút "Xem N câu trả lời" đang gập không (nghĩa là còn bình luận ẩn)."""
+        page = self.page
+        if page is None:
+            return False
+        try:
+            return bool(await page.evaluate(_HAS_REPLY_BTN_JS, SCOPE))
+        except Exception:
+            return False
 
     async def _at_bottom(self) -> bool:
         """Đã cuộn tới cuối vùng bình luận chưa (Facebook đang tải thêm ở đáy)."""
@@ -345,7 +426,7 @@ class CommentCrawler:
         if page is None:
             return True
         try:
-            return bool(await page.evaluate(_BOTTOM_JS, MODAL))
+            return bool(await page.evaluate(_BOTTOM_JS, SCOPE))
         except Exception:
             return True
 
@@ -389,6 +470,10 @@ class CommentCrawler:
                         seen["created_at"] = row["created_at"]
 
         for _ in range(self.max_rounds):
+            # Facebook vẽ lại vùng bình luận, làm mất dấu đánh dấu — đánh lại nếu mất.
+            if self.page is not None and await self.page.locator(SCOPE).count() == 0:
+                await self._mark_scope()
+                await self._focus_scope()
             await self._scroll()
             absorb(await self._rows())
             if on_progress is not None and len(merged) != reported:
@@ -405,43 +490,25 @@ class CommentCrawler:
             if total > last_count:
                 last_count = total
                 idle = 0
+                # Đã chạm đáy và không còn nút "Xem N câu trả lời" nghĩa là đã lấy
+                # hết phần trang này cho — dừng luôn, không chờ vô ích.
+                if await self._at_bottom() and not await self._has_collapsed_replies():
+                    break
                 continue
             if await self._at_bottom():
-                await self._pause(1.5, 3.5)
+                # Đã tới đáy: Facebook thường cần vài giây để nạp, chờ có điều
+                # kiện thay vì ngủ cứng rồi thử lại từ đầu.
+                await self._pause(1.2, 2.4)
             idle += 1
             # Không thêm gì nhiều vòng liên tiếp thì dừng, kể cả khi chưa đạt
             # target — Facebook đôi khi báo nhiều hơn thực tế hiển thị.
-            if idle >= 4:
+            if idle >= 3:
                 break
             if time.monotonic() >= deadline:
                 break
 
         absorb(await self._rows())
         return self._to_comments(list(merged.values()))
-
-    async def _parent_id(self, idx: int) -> str:
-        """Tìm comment_id của ô tại vị trí idx (dùng làm cha cho các reply mới)."""
-        page = self.page
-        if page is None:
-            return ""
-        try:
-            return str(await page.evaluate(
-                """(pair) => {
-                  const a = document.querySelectorAll('[role="article"]')[pair.idx];
-                  if (!a) return '';
-                  for (const link of a.querySelectorAll('a[href]')) {
-                    const href = link.getAttribute('href') || '';
-                    if (href.includes('comment_id=')) {
-                      try { return new URL(href.replace(/&__cft__.*/, ''), location.origin)
-                             .searchParams.get('comment_id') || ''; } catch (e) { return ''; }
-                    }
-                  }
-                  return '';
-                }""",
-                {"idx": idx},
-            ) or "")
-        except Exception:
-            return ""
 
     # -------------------------------------------------------------- chuyển đổi
 
@@ -486,9 +553,10 @@ class CommentCrawler:
         for row, parent, depth in ordered:
             if row.get("hidden"):
                 continue  # bình luận bị ẩn — bỏ qua
+            # Không bỏ bình luận trống: Facebook có bình luận chỉ có avatar và
+            # nút "Trả lời", không có chữ (người dùng xoá nội dung). Bỏ đi thì mất
+            # dữ liệu mà không ai biết, nên giữ lại với nội dung rỗng.
             text = (row.get("text") or "").strip().lstrip("·•-–— ").strip()
-            if not text:
-                continue
             out.append(
                 Comment(
                     comment_id=row["comment_id"],
@@ -507,9 +575,12 @@ class CommentCrawler:
         await asyncio.sleep(random.uniform(low, high))
 
 
-# Nghỉ giữa các bài để không bị coi là spam.
-GAP_MIN = 4.0
-GAP_MAX = 9.0
+# Nghỉ giữa các bài để không bị coi là spam. Khi mọi thứ êm, nghỉ ngắn; gặp dấu
+# hiệu bất thường (Facebook báo nhiều hơn thực tế, bài lỗi, bị chặn) thì nghỉ
+# dài hơn. Vẫn luôn có nghỉ, chỉ là không ngủ cứng 4-9 giây mọi bài.
+GAP_OK = (2.0, 4.0)
+GAP_SUSPECT = (8.0, 14.0)
+GAP_BAD = (20.0, 35.0)
 
 
 async def crawl_comments(
@@ -519,6 +590,7 @@ async def crawl_comments(
     collection_id: int,
     min_comments: int = 2,
     limit: int | None = None,
+    retries: int = 2,
     idle_timeout: float = 8.0,
     stop: Callable[[], bool] | None = None,
     on_progress: Callable[[str], None] | None = None,
@@ -558,7 +630,7 @@ async def crawl_comments(
         merged: dict[str, Comment] = {}
         # Facebook đôi khi chỉ nạp một phần bình luận. Thử lại vài lần, mỗi lần
         # gộp thêm vào kết quả cũ, tới khi lấy đủ bằng số Facebook hiển thị.
-        for attempt in range(1, 4):
+        for attempt in range(1, max(1, retries + 1) + 1):
             try:
                 opened = await crawler.open_post(permalink)
             except Exception as exc:
@@ -566,7 +638,7 @@ async def crawl_comments(
                 if on_progress:
                     on_progress(f"  lỗi mở bài: {exc}")
             if not opened:
-                if attempt == 3:
+                if attempt > max(1, retries + 1):
                     store.mark_comments_error(collection_id, post["post_id"], "không mở được trang bài")
                     done += 1
                 break
@@ -591,13 +663,23 @@ async def crawl_comments(
             gained = len(merged) - before
             if not target or len(merged) >= target:
                 break
-            if attempt < 3:
+            # Facebook thường báo nhiều hơn số bình luận thật (đã kiểm chứng: một
+            # bài ghi 123 nhưng chỉ mở được 37). Tải lại trang mà không thu thêm
+            # được gì thì thừa — vừa mất thời gian, vừa tăng số lần tải trang.
+            if gained == 0:
+                if on_progress:
+                    on_progress(
+                        f"  lấy được {len(merged)}/{target} — Facebook không hiện thêm, "
+                        "coi như đủ"
+                    )
+                break
+            if attempt <= max(1, retries + 1):
                 if on_progress:
                     on_progress(
                         f"  mới lấy {len(merged)}/{target} (+{gained}) — tải lại trang bài thử lại"
                     )
                 await crawler.close()
-                await asyncio.sleep(random.uniform(2.5, 5.0))
+                await asyncio.sleep(random.uniform(1.5, 3.0))
 
         items = list(merged.values())
         saved = store.save_comments(collection_id, post["post_id"], items)
@@ -605,8 +687,20 @@ async def crawl_comments(
         if on_progress:
             reply_n = sum(1 for c in items if c.depth > 0)
             on_progress(f"  xong bài này: lưu {saved} bình luận ({reply_n} trả lời)")
+
+        # Chọn mức nghỉ dựa trên tình hình thật: Facebook còn bị "đói" bình luận
+        # không (lần cuối vẫn thu thêm được), có bị chặn không. Không dùng tỉ lệ
+        # lấy/được-báo vì con số của Facebook vốn không đáng tin.
+        if source.blocked:
+            if on_progress:
+                on_progress("Facebook đang phản ứng — nghỉ lâu trước khi tiếp tục")
+            gap = GAP_BAD
+        elif gained > 0 or not target:
+            gap = GAP_OK
+        else:
+            gap = GAP_SUSPECT
         await crawler.close()
-        await asyncio.sleep(random.uniform(GAP_MIN, GAP_MAX))
+        await asyncio.sleep(random.uniform(*gap))
 
     await crawler.close()
     if on_progress:

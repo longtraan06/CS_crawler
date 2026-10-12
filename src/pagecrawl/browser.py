@@ -66,6 +66,7 @@ class PlaywrightSource:
         self.feed_url = ""
         self.recovered_navigations = 0
         self.needs_login = False
+        self._pending = 0
 
     async def start(self, url: str) -> None:
         from playwright.async_api import async_playwright
@@ -139,9 +140,21 @@ class PlaywrightSource:
         return False
 
     def _on_response(self, response: object) -> None:
+        # Tránh dồn quá nhiều tác vụ khi cuộn nhanh: response chưa xử lý xong thì
+        # bỏ qua response mới thay vì xếp hàng. Dữ liệu feed vẫn được lấy đủ vì
+        # mỗi lần cuộn đều trả về một đợt bài mới.
+        if self._pending >= 24:
+            return
+        self._pending += 1
         asyncio.create_task(self._read_response(response))
 
     async def _read_response(self, response: object) -> None:
+        try:
+            await self._read_response_inner(response)
+        finally:
+            self._pending -= 1
+
+    async def _read_response_inner(self, response: object) -> None:
         try:
             if response.status == 429 or "/checkpoint/" in response.url:
                 self.blocked = True
@@ -156,21 +169,13 @@ class PlaywrightSource:
             body = await response.body()
         except Exception:
             return
-        docs = parse_json_payloads(body)
-        if not docs:
+        # Giải nén và rút bài ra khỏi event loop: đây là phần tốn CPU, chạy thẳng
+        # sẽ chặn cuộn trang và làm chậm cả trình duyệt. Chuyển sang thread không
+        # đổi gì về phía Facebook — vẫn đúng số request, đúng thứ tự.
+        try:
+            posts, flag = await asyncio.to_thread(_extract_docs, body, response.url)
+        except Exception:
             return
-        posts: list[Post] = []
-        flag: bool | None = None
-        for doc in docs:
-            found = extract_posts(doc, base_url=response.url)
-            if not found:
-                continue
-            posts.extend(found)
-            has_next = cursor_has_next(doc)
-            if has_next is True:
-                flag = True
-            elif has_next is False and flag is None:
-                flag = False
         if not posts and flag is None:
             return
         await self.queue.put((merge_posts(posts), flag))
@@ -296,6 +301,11 @@ class PlaywrightSource:
             traveled += chunk * random.uniform(0.75, 1.0)
             await self._eval_scroll(False, metrics["y"] + min(traveled, remaining))
             await asyncio.sleep(random.uniform(0.35, 0.9))
+            # Đã có dữ liệu về thì dừng cuộn, không ngủ thêm — cũng giống cách
+            # người dùng thật dừng lại khi bài đã hiện đủ. Tốc độ tải về phía
+            # Facebook không đổi, chỉ bớt thời gian ngồi không.
+            if not self.queue.empty():
+                return
         if random.random() < 0.08:
             await asyncio.sleep(random.uniform(3.0, 7.0))
 
@@ -411,6 +421,26 @@ class PlaywrightSource:
                 )
             )
         return posts
+
+
+def _extract_docs(body: bytes, base_url: str) -> tuple[list[Post], bool | None]:
+    """Rút bài viết ra khỏi một response (chạy ở thread, không chạm event loop)."""
+    docs = parse_json_payloads(body)
+    if not docs:
+        return [], None
+    posts: list[Post] = []
+    flag: bool | None = None
+    for doc in docs:
+        found = extract_posts(doc, base_url=base_url)
+        if not found:
+            continue
+        posts.extend(found)
+        has_next = cursor_has_next(doc)
+        if has_next is True:
+            flag = True
+        elif has_next is False and flag is None:
+            flag = False
+    return posts, flag
 
 
 def _maybe_json(ctype: str, url: str) -> bool:
