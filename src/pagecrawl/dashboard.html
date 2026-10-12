@@ -47,6 +47,29 @@
     .permalink { display: inline-block; margin-top: 4px; font-size: 13px; color: #1877f2; text-decoration: none; }
     .permalink:hover { text-decoration: underline; }
     .permalink[hidden] { display: none; }
+    .cbar { display: flex; gap: 8px; margin-top: 8px; }
+    .cmt-btn { background: #e7f3ff; color: #1877f2; border: 1px solid #b6d9fb;
+               border-radius: 6px; padding: 5px 11px; font-size: 13px; cursor: pointer; }
+    .cmt-btn:hover:not(:disabled) { background: #d5e9ff; }
+    .cmt-btn:disabled { background: #f1f3f4; color: #8a8a8a; border-color: #dcdcdc; cursor: default; }
+    .cmt-reset { background: none; border: 1px solid #ddd; border-radius: 6px;
+                 padding: 5px 9px; font-size: 13px; color: #666; cursor: pointer; }
+    .cmt-reset:hover { background: #f5f5f5; }
+    .cmt-box { margin-top: 8px; border-top: 1px solid #e4e6eb; padding-top: 8px; }
+    .cmt-box[hidden] { display: none; }
+    .cmt-row { display: flex; gap: 8px; padding: 6px 0; border-bottom: 1px solid #f0f2f5; }
+    .cmt-row.reply { margin-left: 26px; }
+    .cmt-row.reply2 { margin-left: 52px; }
+    .cmt-av { width: 28px; height: 28px; border-radius: 50%; background: #d7dbe0;
+              flex: 0 0 28px; text-align: center; line-height: 28px; font-size: 13px; color: #55606b; }
+    .cmt-main { min-width: 0; }
+    .cmt-name { font-weight: 600; font-size: 13px; }
+    .cmt-when { font-size: 12px; color: #8a8a8a; margin-left: 6px; font-weight: 400; }
+    .cmt-text { font-size: 14px; white-space: pre-wrap; word-break: break-word; }
+    .cmt-empty, .cmt-loading { color: #8a8a8a; font-size: 13px; padding: 8px 0; }
+    .cmark { font-size: 13px; color: #555; margin-left: 4px; }
+    .cmark.busy { color: #1877f2; font-weight: 600; }
+    #tools .sep { width: 1px; align-self: stretch; background: #dcdcdc; margin: 0 4px; }
     .empty { color: #65676b; }
     @media (max-width: 800px) { main { grid-template-columns: 1fr; } }
   </style>
@@ -88,6 +111,14 @@
     <input id="new-collection" type="text" placeholder="tên collection mới">
     <button id="create-collection">Tạo &amp; chọn</button>
     <button id="delete-collection" title="Xóa collection đang chọn">Xóa</button>
+    <span class="sep"></span>
+    <label class="opt" title="Chỉ lấy bài có số bình luận từ mức này trở lên">Từ
+      <input id="cm-min" type="number" min="1" max="999" value="2"> bình luận
+    </label>
+    <button id="cm-run" title="Mở từng bài và lấy bình luận">Lấy bình luận</button>
+    <button id="cm-stop" hidden>Dừng bình luận</button>
+    <button id="cm-reset-all" title="Xoá toàn bộ bình luận đã lưu trong collection">Xoá tất cả</button>
+    <span id="cmark" class="cmark"></span>
   </div>
   <main>
     <aside>
@@ -117,6 +148,7 @@
       login_required: "Facebook yêu cầu đăng nhập lại",
     };
     const cards = new Map();
+    const postsById = new Map();
     let pageUrl = "";
     let query = "";
     let collectionId = 0;
@@ -195,6 +227,19 @@
       }
       if (Array.isArray(data.logs)) document.querySelector("#log").textContent = data.logs.join("\n");
       if (urlChanged) loadPosts();
+      if (typeof data.comment_running === "boolean") {
+        const running = data.comment_running;
+        cmRunBtn.hidden = running;
+        cmStopBtn.hidden = !running;
+        cmStopBtn.disabled = false;
+        if (running) {
+          CMARK.textContent =
+            "đang lấy bình luận… xong " + data.comment_done + "/" + data.comment_total;
+          CMARK.classList.add("busy");
+        } else {
+          loadCommentProgress();
+        }
+      }
     }
 
     function card(post, flags) {
@@ -213,7 +258,12 @@
         </header>
         <div class="counts"></div>
         <div class="text"></div>
-        <div class="images"></div>`;
+        <div class="images"></div>
+        <div class="cbar">
+          <button type="button" class="cmt-btn">Bình luận</button>
+          <button type="button" class="cmt-reset" title="Xoá bình luận đã lưu của bài này">Xoá</button>
+        </div>
+        <div class="cmt-box" hidden></div>`;
       fill(el, post, flags);
       return el;
     }
@@ -233,6 +283,23 @@
         link.textContent = "";
       }
       el.querySelector(".text").textContent = post.text || "";
+      const status = post.comments_status || "pending";
+      const btn = el.querySelector(".cmt-btn");
+      const reset = el.querySelector(".cmt-reset");
+      if (!post.comment_count) {
+        btn.textContent = "Không có bình luận";
+        btn.disabled = true;
+      } else if (status === "done") {
+        btn.textContent = "Bình luận đã lưu: " + (post.comments_saved || 0);
+        btn.disabled = false;
+      } else if (status === "error") {
+        btn.textContent = "Lỗi — bấm để xem/thử lại (" + (post.comments_saved || 0) + ")";
+        btn.disabled = false;
+      } else {
+        btn.textContent = "Lấy " + post.comment_count + " bình luận";
+        btn.disabled = false;
+      }
+      reset.hidden = !post.comments_saved;
       const flag = el.querySelector(".flag");
       flag.textContent = flags && flags.skipped ? "đã có" : (flags && flags.updated ? "đã cập nhật" : "");
       const box = el.querySelector(".images");
@@ -259,6 +326,7 @@
     }
 
     function upsert(post, flags) {
+      postsById.set(post.post_id, post);
       let el = cards.get(post.post_id);
       if (!el) {
         const empty = document.querySelector("#list .empty");
@@ -270,6 +338,156 @@
       }
       fill(el, post, flags);
     }
+
+    const CMARK = document.querySelector("#cmark");
+    const cmRunBtn = document.querySelector("#cm-run");
+    const cmStopBtn = document.querySelector("#cm-stop");
+    const cmResetAllBtn = document.querySelector("#cm-reset-all");
+    const cmMinInput = document.querySelector("#cm-min");
+
+    async function loadCommentProgress() {
+      const response = await fetch("/api/comments/progress");
+      if (!response.ok) return;
+      const p = await response.json();
+      CMARK.textContent =
+        "bình luận: đã lấy " + p.done + "/" + p.eligible + " bài · " + p.saved + " bình luận"
+        + (p.error ? " · " + p.error + " lỗi" : "");
+      CMARK.classList.toggle("busy", p.pending > 0 && p.done < p.eligible);
+    }
+
+    cmRunBtn.onclick = async () => {
+      cmRunBtn.disabled = true;
+      const response = await fetch("/api/comments/start", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ min_comments: Number(cmMinInput.value || 2), limit: 0 })
+      });
+      if (!response.ok) {
+        const body = await response.json().catch(() => ({}));
+        alert(typeof body.detail === "string" ? body.detail : "không bắt đầu được");
+      }
+      cmRunBtn.disabled = false;
+      loadCommentProgress();
+    };
+
+    cmStopBtn.onclick = async () => {
+      await fetch("/api/comments/stop", { method: "POST" });
+      cmStopBtn.disabled = true;
+    };
+
+    cmResetAllBtn.onclick = async () => {
+      if (!confirm("Xoá toàn bộ bình luận đã lưu trong collection này?")) return;
+      await fetch("/api/comments/reset", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ post_id: "" })
+      });
+      cards.forEach((el) => { el.querySelector(".cmt-box").hidden = true; });
+      loadPosts();
+      loadCommentProgress();
+    };
+
+    function cmtRow(c) {
+      const row = document.createElement("div");
+      row.className = "cmt-row" + (c.depth ? (c.depth > 1 ? " reply2" : " reply") : "");
+      const av = document.createElement("div");
+      av.className = "cmt-av";
+      av.textContent = (c.author || "?").trim().charAt(0).toUpperCase() || "?";
+      const main = document.createElement("div");
+      main.className = "cmt-main";
+      const head = document.createElement("div");
+      const name = document.createElement("span");
+      name.className = "cmt-name";
+      name.textContent = c.author || "(không tên)";
+      head.appendChild(name);
+      if (c.created_at) {
+        const when = document.createElement("span");
+        when.className = "cmt-when";
+        when.textContent = c.created_at;
+        head.appendChild(when);
+      }
+      if (c.like_count) {
+        const likes = document.createElement("span");
+        likes.className = "cmt-when";
+        likes.textContent = "· " + c.like_count + " thích";
+        head.appendChild(likes);
+      }
+      const text = document.createElement("div");
+      text.className = "cmt-text";
+      text.textContent = c.text || "";
+      main.append(head, text);
+      row.append(av, main);
+      return row;
+    }
+
+    async function toggleComments(el, post) {
+      const box = el.querySelector(".cmt-box");
+      if (!box.hidden) {
+        box.hidden = true;
+        box.replaceChildren();
+        return;
+      }
+      box.hidden = false;
+      box.replaceChildren();
+      const loading = document.createElement("div");
+      loading.className = "cmt-loading";
+      loading.textContent = "Đang tải bình luận…";
+      box.appendChild(loading);
+      const response = await fetch("/api/comments?post_id=" + encodeURIComponent(post.post_id) + "&limit=500");
+      if (!response.ok) {
+        box.replaceChildren();
+        const err = document.createElement("div");
+        err.className = "cmt-empty";
+        err.textContent = "không tải được bình luận";
+        box.appendChild(err);
+        return;
+      }
+      const data = await response.json();
+      box.replaceChildren();
+      if (!data.comments.length) {
+        const empty = document.createElement("div");
+        empty.className = "cmt-empty";
+        const p = data.post || {};
+        if (p.comments_saved) {
+          empty.textContent = "Bài này có " + p.comments_saved + " bình luận đã lưu.";
+        } else if (p.comment_count >= 2) {
+          empty.textContent = "Chưa lấy bình luận (Facebook báo " + p.comment_count + "). Bấm nút lấy bình luận trên thanh trên để chạy.";
+        } else {
+          empty.textContent = "Bài này không có bình luận.";
+        }
+        box.appendChild(empty);
+        return;
+      }
+      const replies = data.comments.filter((c) => c.depth > 0).length;
+      const head = document.createElement("div");
+      head.className = "cmt-when";
+      head.style.marginBottom = "6px";
+      head.textContent = data.total + " bình luận đã lưu" + (replies ? " (" + replies + " trả lời)" : "");
+      box.appendChild(head);
+      for (const c of data.comments) box.appendChild(cmtRow(c));
+    }
+
+    document.querySelector("#list").addEventListener("click", async (event) => {
+      const card = event.target.closest(".card");
+      if (!card) return;
+      const postId = card.id.replace(/^post-/, "");
+      const post = (postsById && postsById.get(postId)) || { post_id: postId, comment_count: 1 };
+      if (event.target.closest(".cmt-btn")) {
+        event.preventDefault();
+        await toggleComments(card, post);
+      } else if (event.target.closest(".cmt-reset")) {
+        event.preventDefault();
+        if (!confirm("Xoá bình luận đã lưu của bài này?")) return;
+        await fetch("/api/comments/reset", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ post_id: postId })
+        });
+        card.querySelector(".cmt-box").hidden = true;
+        loadPosts();
+        loadCommentProgress();
+      }
+    });
 
     async function loadCollections() {
       const response = await fetch("/api/collections");
@@ -429,12 +647,13 @@
       }
     }
 
-    async function boot() {
+async function boot() {
       const response = await fetch("/api/state");
       const data = await response.json();
       applyStatus(data);
       await loadCollections();
       await loadPosts();
+      await loadCommentProgress();
       const source = new EventSource("/api/events");
       source.onmessage = (event) => onEvent(JSON.parse(event.data));
       source.onerror = () => {

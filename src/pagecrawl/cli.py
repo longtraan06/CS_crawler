@@ -90,6 +90,65 @@ def run(
 
 
 @app.command()
+def comments(
+    collection: str = typer.Option("mặc định", "--collection", help="Collection cần lấy bình luận"),
+    min_comments: int = typer.Option(2, "--min-comments", help="Chỉ lấy bài có số bình luận từ mức này trở lên"),
+    db: Path = typer.Option(_db_option(), "--db"),
+    profile: Path = typer.Option(_profile_option(), "--profile"),
+    headless: bool = typer.Option(True, "--headless/--headed", help="Ẩn cửa sổ hay hiện cửa sổ Chromium"),
+    limit: int = typer.Option(0, "--limit", help="Giới hạn số bài (0 = hết cả collection)"),
+) -> None:
+    """Lấy bình luận của các bài đã crawl trong một collection.
+
+    Chạy tuần tự từng bài, nghỉ vài giây giữa mỗi bài. Bài nào đã lấy xong thì bỏ
+    qua, nên dừng giữa chừng rồi chạy lại sẽ tiếp tục từ chỗ còn dang dở.
+    """
+    from pagecrawl.browser import PlaywrightSource
+    from pagecrawl.comments import crawl_comments
+
+    async def _run() -> int:
+        store = Store(db)
+        try:
+            target = store.get_collection_by_name(collection)
+            if target is None:
+                typer.echo(f"không có collection: {collection}")
+                typer.echo("có sẵn: " + ", ".join(c["name"] for c in store.list_collections()))
+                return 2
+            collection_id = int(target["id"])
+            progress = store.comment_progress(collection_id, min_comments)
+            typer.echo(f"collection: {collection} | bài đủ ngưỡng: {progress['eligible']}")
+            typer.echo(f"đã lấy xong: {progress['done']} | chờ lấy: {progress['pending']} | lỗi: {progress['error']}")
+            if progress["pending"] == 0:
+                typer.echo("không còn bài nào cần lấy bình luận.")
+                return 0
+
+            source = PlaywrightSource(profile, headless=headless)
+            await source.start("https://www.facebook.com/")
+            try:
+                await crawl_comments(
+                    source,
+                    store,
+                    collection_id=collection_id,
+                    min_comments=min_comments,
+                    limit=limit or None,
+                    on_progress=typer.echo,
+                )
+            finally:
+                await source.close()
+            after = store.comment_progress(collection_id, min_comments)
+            typer.echo(
+                f"xong: lưu {after['saved']} bình luận | bài đã lấy {after['done']}/{after['eligible']}"
+            )
+            return 0
+        finally:
+            store.close()
+
+    code = asyncio.run(_run())
+    if code:
+        raise typer.Exit(code)
+
+
+@app.command()
 def report(
     url: str = typer.Option(..., "--url", help="URL page đã crawl"),
     db: Path = typer.Option(_db_option(), "--db"),

@@ -22,6 +22,22 @@ class Post(BaseModel):
         return self.model_dump(exclude={"raw"})
 
 
+class Comment(BaseModel):
+    """Một bình luận đã lấy từ trang bài viết."""
+
+    comment_id: str
+    post_id: str = ""
+    parent_id: str | None = None
+    depth: int = 0
+    author: str = ""
+    text: str = ""
+    created_at: str = ""
+    like_count: int = 0
+
+    def public_dict(self) -> dict[str, Any]:
+        return self.model_dump()
+
+
 def content_hash(post: Post) -> str:
     payload = {
         "text": post.text,

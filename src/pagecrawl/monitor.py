@@ -12,6 +12,7 @@ from pagecrawl.state import AppState
 from pagecrawl.store import Store
 
 Opener = Callable[[str, bool, float, bool], Awaitable[None]]
+CommentOpener = Callable[[int, int, "int | None"], Awaitable[None]]
 
 
 class OpenBody(BaseModel):
@@ -28,10 +29,30 @@ class CollectionBody(BaseModel):
 class SelectBody(BaseModel):
     collection_id: int
 
+
+class CommentsBody(BaseModel):
+    min_comments: int = Field(default=2, ge=1, le=1000)
+    limit: int = Field(default=0, ge=0, le=1000)
+
+
+class CommentQuery(BaseModel):
+    post_id: str
+    limit: int = Field(default=300, ge=1, le=1000)
+    offset: int = Field(default=0, ge=0)
+
+
+class ResetCommentsBody(BaseModel):
+    post_id: str = ""
+
 _HTML = (Path(__file__).parent / "dashboard.html").read_text(encoding="utf-8")
 
 
-def create_app(state: AppState, store: Store, opener: Opener | None = None) -> FastAPI:
+def create_app(
+    state: AppState,
+    store: Store,
+    opener: Opener | None = None,
+    comment_opener: CommentOpener | None = None,
+) -> FastAPI:
     @asynccontextmanager
     async def lifespan(app: FastAPI):
         state.attach()
@@ -136,6 +157,75 @@ def create_app(state: AppState, store: Store, opener: Opener | None = None) -> F
         state.stop_event.set()
         state.start_event.set()
         return {"ok": True}
+
+    # ------------------------------------------------------------ bình luận
+
+    @app.get("/api/comments/progress")
+    async def api_comments_progress() -> dict:
+        return store.comment_progress(state.collection_id)
+
+    @app.get("/api/comments")
+    async def api_comments(post_id: str = "", limit: int = 300, offset: int = 0) -> dict:
+        if not post_id:
+            raise HTTPException(status_code=400, detail="thiếu post_id")
+        result = store.list_comments(
+            state.collection_id, post_id, limit=min(limit, 1000), offset=offset
+        )
+        post = store.get_post(post_id, collection_id=state.collection_id)
+        result["post"] = {
+            "post_id": post_id,
+            "author": (post or {}).get("author", ""),
+            "comment_count": (post or {}).get("comment_count", 0),
+            "comments_saved": (post or {}).get("comments_saved", 0),
+            "comments_status": (post or {}).get("comments_status", "pending"),
+            "permalink": (post or {}).get("permalink"),
+        }
+        return result
+
+    @app.post("/api/comments/start")
+    async def api_comments_start(body: CommentsBody) -> dict:
+        if comment_opener is None:
+            raise HTTPException(status_code=404, detail="hãy chạy pagecrawl ui")
+        if state.comment_running:
+            raise HTTPException(status_code=409, detail="đang lấy bình luận")
+        state.attach()
+        if state.comment_stop_event is not None:
+            state.comment_stop_event.clear()
+        progress = store.comment_progress(state.collection_id, body.min_comments)
+        if progress["pending"] == 0:
+            raise HTTPException(status_code=400, detail="không còn bài nào cần lấy bình luận")
+        state.comment_running = True
+        state.comment_total = progress["pending"]
+        state.comment_done = 0
+        state.comment_error = 0
+        state.comment_current = ""
+        state.log(
+            f"bắt đầu lấy bình luận: {progress['pending']} bài trong "
+            f"collection {state.collection_name}"
+        )
+        state.emit_status()
+        state.comment_job = asyncio.create_task(
+            comment_opener(state.collection_id, body.min_comments, body.limit or None)
+        )
+        return {"ok": True, "pending": progress["pending"]}
+
+    @app.post("/api/comments/stop")
+    async def api_comments_stop() -> dict:
+        state.attach()
+        if not state.comment_running:
+            return {"ok": True}
+        state.log("dừng lấy bình luận — bài đang làm sẽ xong rồi mới dừng")
+        if state.comment_stop_event is not None:
+            state.comment_stop_event.set()
+        return {"ok": True}
+
+    @app.post("/api/comments/reset")
+    async def api_comments_reset(body: ResetCommentsBody) -> dict:
+        if state.comment_running:
+            raise HTTPException(status_code=409, detail="đang lấy bình luận — dừng trước đã")
+        changed = store.reset_comments(state.collection_id, body.post_id or None)
+        state.log(f"đã xoá bình luận và đặt lại trạng thái cho {changed} bài")
+        return {"ok": True, "reset": changed}
 
     @app.get("/api/events")
     async def api_events(request: Request) -> StreamingResponse:

@@ -22,10 +22,19 @@ class AppState:
         self.rounds = 0
         self.session_ready = False
         self.logs: list[str] = []
+        # tiến độ lấy bình luận
+        self.comment_running = False
+        self.comment_total = 0
+        self.comment_done = 0
+        self.comment_error = 0
+        self.comment_saved = 0
+        self.comment_current = ""
         self.page: Any = None
         self.job: asyncio.Task | None = None
+        self.comment_job: asyncio.Task | None = None
         self.start_event: asyncio.Event | None = None
         self.stop_event: asyncio.Event | None = None
+        self.comment_stop_event: asyncio.Event | None = None
         self.shutdown_event: asyncio.Event | None = None
         self.subscribers: list[asyncio.Queue] = []
 
@@ -34,6 +43,11 @@ class AppState:
             self.start_event = asyncio.Event()
             self.stop_event = asyncio.Event()
             self.shutdown_event = asyncio.Event()
+            self.comment_stop_event = asyncio.Event()
+
+    def should_stop_comments(self) -> bool:
+        """Vòng lặc lấy bình luận dài — dùng để dừng ngay khi bấm Dừng."""
+        return self.comment_stop_event is not None and self.comment_stop_event.is_set()
 
     def log(self, line: str) -> None:
         self.logs.append(line)
@@ -62,6 +76,12 @@ class AppState:
             "updated_count": self.updated_count,
             "rounds": self.rounds,
             "session_ready": self.session_ready,
+            "comment_running": self.comment_running,
+            "comment_total": self.comment_total,
+            "comment_done": self.comment_done,
+            "comment_error": self.comment_error,
+            "comment_saved": self.comment_saved,
+            "comment_current": self.comment_current,
             "logs": self.logs[-50:],
         }
 

@@ -11,7 +11,8 @@ Mở trình duyệt, đăng nhập, bấm crawl. Tool tự cuộn và lưu lại
 
 Dữ liệu lưu vào SQLite. Có giao diện web theo dõi trên máy tính.
 
-> Tool **không** lấy nội dung bình luận, chỉ lấy con số bình luận mà Facebook hiển thị.
+> Tool **không** lấy nội dung bình luận khi crawl bài. Phần bình luận là một chế độ
+> riêng, xem ở mục 6.
 > Chỉ dùng cho nhóm/page mà bạn có quyền xem. Facebook có thể chặn nếu bạn
 > crawl quá nhanh hoặc quá nhiều.
 
@@ -76,6 +77,9 @@ Lệnh này cũng mở web monitor ở cổng 8787 để bạn bấm "Bắt đ�
 ```bash
 # Xem lại bài đã lưu, in ra terminal
 pagecrawl report --url "https://www.facebook.com/groups/ten-nhom-cua-ban"
+
+# Lấy bình luận cho các bài trong một collection
+pagecrawl comments --collection "mặc định" --min-comments 2
 
 # Mở web ở cổng khác
 pagecrawl ui --port 9000
@@ -147,7 +151,55 @@ pagecrawl run --url "..." --collection "tin-tuc"
 
 ---
 
-## 6. Dữ liệu nằm ở đâu
+## 6. Lấy bình luận (chế độ riêng)
+
+Sau khi đã crawl bài, có thể lấy thêm bình luận của các bài đó.
+
+### Cách 1 — trên web
+
+Trên thanh công cụ có:
+
+| Nút | Tác dụng |
+|---|---|
+| **Từ [2] bình luận** | chỉ lấy bài có số bình luận **từ mức này trở lên** (mặc định 2, đổi được) |
+| **Lấy bình luận** | bắt đầu lấy cho collection đang chọn |
+| **Dừng bình luận** | dừng giữa chừng |
+| **Xoá tất cả** | xoá bình luận đã lưu, đặt lại để lấy lại |
+
+Trên mỗi thẻ bài có nút **Bình luận** — bấm vào để xem bình luận đã lưu ngay tại chỗ.
+Cột bên trái hiện tiến độ: `đã lấy 3/31 bài · 21 bình luận`.
+
+### Cách 2 — bằng lệnh
+
+```bash
+pagecrawl comments --collection "tin-tuc" --min-comments 2
+```
+
+Thêm `--limit 5` để chỉ lấy 5 bài, `--headed` để hiện cửa sổ trình duyệt.
+
+### Cách chạy cho an toàn
+
+- Chạy **tuần tự từng bài**, nghỉ vài giây giữa mỗi bài.
+- Mỗi bài là **một lần tải trang riêng**. Collection càng nhiều bài càng lâu.
+- **Dừng được giữa chừng.** Bài nào lấy xong sẽ được đánh dấu, chạy lại sẽ bỏ qua
+  và tiếp tục từ bài còn dang dở — không lặp lại bài đã xong.
+- Bài nào lỗi sẽ ghi `comments_status = error`, lần sau chạy lại thử tiếp.
+- **Xoá và lấy lại:** bấm **Xoá tất cả** rồi **Lấy bình luận**.
+
+### Tool lấy được gì
+
+Mỗi bình luận lưu: tác giả, nội dung, thời gian, số thích, `comment_id` của
+Facebook, và bình luận cha (nếu là trả lời).
+
+Bình luận bị Facebook ẩn sẽ bị bỏ qua.
+
+**Hạn chế:** số bình luận Facebook hiển thị có thể không khớp số thực tế, và đôi khi
+Facebook chỉ nạp một phần. Tool có tự thử lại 3 lần rồi gộp kết quả, nên số lưu
+được có thể ít hơn con số Facebook báo. Muốn thử lại thì **Xoá tất cả** rồi chạy lại.
+
+---
+
+## 7. Dữ liệu nằm ở đâu
 
 Tất cả nằm trong thư mục `data/` (thư mục này **không** được đưa lên GitHub):
 
@@ -165,9 +217,15 @@ Xem bài trong SQLite:
 sqlite3 data/crawler.db "SELECT author, created_at, permalink FROM posts LIMIT 20;"
 ```
 
+Xem bình luận đã lưu:
+
+```bash
+sqlite3 data/crawler.db "SELECT author, substr(text,1,60) FROM comments LIMIT 20;"
+```
+
 ---
 
-## 7. Chạy test
+## 8. Chạy test
 
 ```bash
 pip install -e ".[dev]"
@@ -178,14 +236,15 @@ Test không cần mạng và không đụng vào Facebook.
 
 ---
 
-## 8. Cấu trúc dự án
+## 9. Cấu trúc dự án
 
 ```
 src/pagecrawl/
-  cli.py         các lệnh: ui, run, report, mock
+  cli.py         các lệnh: ui, run, report, comments, mock
   session.py     nối lệnh + web monitor với trình duyệt
   browser.py     mở Chromium, cuộn trang, bắt dữ liệu từ trang
   extract.py     đọc bài viết từ dữ liệu trang, dựng link bài
+  comments.py    lấy bình luận của một bài (mở modal, đổi chế độ, cuộn)
   crawl.py       vòng lặp crawl
   store.py       đọc/ghi SQLite
   monitor.py     web API
@@ -198,7 +257,7 @@ tests/           test tự động
 
 ---
 
-## 9. Khắc phục sự cố
+## 10. Khắc phục sự cố
 
 **"Executable file not found" hoặc không gõ được `pagecrawl`**
 Chưa bật môi trường ảo. Chạy lại `.venv\Scripts\activate` rồi cài lại `pip install -e .`

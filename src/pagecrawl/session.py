@@ -130,6 +130,49 @@ async def run_session(
     return exit_code
 
 
+def _make_comment_opener(state: AppState, store: Store, profile_path, headless: bool):
+    """Tạo hàm chạy nền để lấy bình luận từ web monitor."""
+    from pagecrawl.browser import PlaywrightSource
+    from pagecrawl.comments import crawl_comments
+
+    async def opener(collection_id: int, min_comments: int, limit: int | None) -> None:
+        source: PlaywrightSource | None = None
+        try:
+            def say(line: str) -> None:
+                state.log(line)
+                if state.comment_total:
+                    state.comment_current = line
+
+            progress = store.comment_progress(collection_id, min_comments)
+            state.comment_total = progress["pending"]
+            source = PlaywrightSource(profile_path, headless=headless)
+            await source.start("https://www.facebook.com/")
+            done = await crawl_comments(
+                source,
+                store,
+                collection_id=collection_id,
+                min_comments=min_comments,
+                limit=limit,
+                stop=state.should_stop_comments,
+                on_progress=say,
+            )
+            state.comment_done = done
+            state.comment_error = store.comment_progress(collection_id, min_comments)["error"]
+            state.log(f"lấy bình luận xong: {done} bài")
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            state.log(f"lỗi lấy bình luận: {exc}")
+        finally:
+            if source is not None:
+                await source.close()
+            state.comment_running = False
+            state.comment_current = ""
+            state.emit_status()
+
+    return opener
+
+
 async def serve_ui(db_path, profile_path, *, port: int = 8787, headless: bool = False) -> None:
     store = Store(db_path)
     state = AppState()
@@ -153,7 +196,12 @@ async def serve_ui(db_path, profile_path, *, port: int = 8787, headless: bool = 
             state.set_status("error")
             state.log(f"lỗi: {exc}")
 
-    app = create_app(state, store, opener=opener)
+    app = create_app(
+        state,
+        store,
+        opener=opener,
+        comment_opener=_make_comment_opener(state, store, profile_path, headless),
+    )
     server = uvicorn.Server(_config(app, port))
     try:
         await server.serve()

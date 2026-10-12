@@ -5,7 +5,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from pagecrawl.models import Post, content_hash
+from pagecrawl.models import Comment, Post, content_hash
 
 
 def _now() -> str:
@@ -61,7 +61,7 @@ class Store:
                   updated_at TEXT NOT NULL
                 );
                 CREATE INDEX IF NOT EXISTS idx_posts_page ON posts(page_url);
-                """
+            """
             )
             self._conn.execute(
                 "INSERT OR IGNORE INTO collections (id, name, created_at) VALUES (1, ?, ?)",
@@ -72,12 +72,12 @@ class Store:
                 self._conn.execute("ALTER TABLE posts ADD COLUMN collection_id INTEGER NOT NULL DEFAULT 1")
             self._conn.execute("CREATE INDEX IF NOT EXISTS idx_posts_collection ON posts(collection_id)")
             self._migrate_posts_composite_key()
-            self._drop_comment_schema()
+            self._drop_feedback_column()
+            self._ensure_comments_schema()
             self._conn.commit()
 
-    def _drop_comment_schema(self) -> None:
-        """Bỏ bảng comments và cột feedback_id (không còn dùng khi bỏ crawl bình luận)."""
-        self._conn.execute("DROP TABLE IF EXISTS comments")
+    def _drop_feedback_column(self) -> None:
+        """Bỏ cột legacy feedback_id (thời xưa dùng để nối bình luận với bài)."""
         columns = {row[1] for row in self._conn.execute("PRAGMA table_info(posts)")}
         if "feedback_id" not in columns:
             return
@@ -112,6 +112,43 @@ class Store:
             CREATE INDEX IF NOT EXISTS idx_posts_page ON posts(page_url);
             CREATE INDEX IF NOT EXISTS idx_posts_collection ON posts(collection_id);
             """
+        )
+
+    def _ensure_comments_schema(self) -> None:
+        """Bảng bình luận + cột đánh dấu bài nào đã lấy bình luận (để chạy lại không lặp)."""
+        self._conn.executescript(
+            """
+            CREATE TABLE IF NOT EXISTS comments (
+              id INTEGER PRIMARY KEY AUTOINCREMENT,
+              collection_id INTEGER NOT NULL DEFAULT 1,
+              post_id TEXT NOT NULL,
+              comment_id TEXT NOT NULL,
+              parent_id TEXT,
+              depth INTEGER NOT NULL DEFAULT 0,
+              author TEXT NOT NULL DEFAULT '',
+              text TEXT NOT NULL DEFAULT '',
+              created_at TEXT,
+              like_count INTEGER NOT NULL DEFAULT 0,
+              saved_at TEXT NOT NULL,
+              UNIQUE(collection_id, comment_id)
+            );
+            CREATE INDEX IF NOT EXISTS idx_comments_post
+              ON comments(collection_id, post_id, depth);
+            CREATE INDEX IF NOT EXISTS idx_comments_parent ON comments(parent_id);
+            """
+        )
+        columns = {row[1] for row in self._conn.execute("PRAGMA table_info(posts)")}
+        # pending: chưa lấy | done: đã lấy xong | error: lỗi, có thể thử lại
+        for name, decl in (
+            ("comments_status", "TEXT NOT NULL DEFAULT 'pending'"),
+            ("comments_saved", "INTEGER NOT NULL DEFAULT 0"),
+            ("comments_done_at", "TEXT"),
+            ("comments_error", "TEXT"),
+        ):
+            if name not in columns:
+                self._conn.execute(f"ALTER TABLE posts ADD COLUMN {name} {decl}")
+        self._conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_posts_comments_status ON posts(collection_id, comments_status)"
         )
 
     def _migrate_posts_composite_key(self) -> None:
@@ -240,6 +277,15 @@ class Store:
             return None
         return {"id": int(row["id"]), "name": row["name"], "created_at": row["created_at"]}
 
+    def get_collection_by_name(self, name: str) -> dict[str, Any] | None:
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT id, name, created_at FROM collections WHERE name = ?", (name,)
+            ).fetchone()
+        if row is None:
+            return None
+        return {"id": int(row["id"]), "name": row["name"], "created_at": row["created_at"]}
+
     def list_collections(self) -> list[dict[str, Any]]:
         with self._lock:
             rows = self._conn.execute(
@@ -263,6 +309,7 @@ class Store:
 
     def delete_collection(self, collection_id: int) -> tuple[int, int]:
         with self._lock:
+            self._conn.execute("DELETE FROM comments WHERE collection_id = ?", (collection_id,))
             posts_del = int(self._conn.execute("DELETE FROM posts WHERE collection_id = ?", (collection_id,)).rowcount)
             cols_del = int(self._conn.execute("DELETE FROM collections WHERE id = ?", (collection_id,)).rowcount)
             self._conn.commit()
@@ -390,6 +437,176 @@ class Store:
             row = self._conn.execute("SELECT COUNT(*) FROM posts WHERE page_url = ?", (page_url,)).fetchone()
         return int(row[0])
 
+    # ------------------------------------------------------------- bình luận
+
+    def list_posts_needing_comments(
+        self,
+        collection_id: int,
+        min_comments: int = 2,
+        limit: int = 500,
+        retry_errors: bool = True,
+    ) -> list[dict[str, Any]]:
+        """Bài chưa lấy bình luận, có đủ ngưỡng bình luận và có link để mở.
+
+        Bài đánh dấu 'done' bị bỏ qua nên bấm Dừng giữa chừng rồi chạy tiếp sẽ
+        không lặp lại bài đã xong.
+        """
+        sql = (
+            "SELECT * FROM posts WHERE collection_id = ? AND comment_count >= ? "
+            "AND permalink IS NOT NULL AND permalink != '' "
+            "AND comments_status != 'done' "
+        )
+        if not retry_errors:
+            sql += "AND comments_status != 'error' "
+        sql += "ORDER BY id DESC LIMIT ?"
+        with self._lock:
+            rows = self._conn.execute(sql, (collection_id, min_comments, limit)).fetchall()
+        return [_row_to_post(row) for row in rows]
+
+    def save_comments(
+        self,
+        collection_id: int,
+        post_id: str,
+        comments: list[Comment],
+    ) -> int:
+        """Ghi bình luận (chạy lại sẽ cập nhật chứ không nhân bản). Trả về tổng số."""
+        now = _now()
+        with self._lock:
+            self._conn.executemany(
+                """
+                INSERT INTO comments
+                  (collection_id, post_id, comment_id, parent_id, depth, author,
+                   text, created_at, like_count, saved_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(collection_id, comment_id) DO UPDATE SET
+                  parent_id = excluded.parent_id,
+                  depth = excluded.depth,
+                  author = excluded.author,
+                  text = excluded.text,
+                  created_at = excluded.created_at,
+                  like_count = excluded.like_count,
+                  saved_at = excluded.saved_at
+                """,
+                [
+                    (
+                        collection_id,
+                        post_id,
+                        item.comment_id,
+                        item.parent_id,
+                        item.depth,
+                        item.author,
+                        item.text,
+                        item.created_at or None,
+                        item.like_count,
+                        now,
+                    )
+                    for item in comments
+                ],
+            )
+            total = int(
+                self._conn.execute(
+                    "SELECT COUNT(*) FROM comments WHERE collection_id = ? AND post_id = ?",
+                    (collection_id, post_id),
+                ).fetchone()[0]
+            )
+            self._conn.execute(
+                "UPDATE posts SET comments_status = 'done', comments_saved = ?, "
+                "comments_done_at = ?, comments_error = NULL "
+                "WHERE post_id = ? AND collection_id = ?",
+                (total, now, post_id, collection_id),
+            )
+            self._conn.commit()
+        return total
+
+    def mark_comments_error(self, collection_id: int, post_id: str, error: str) -> None:
+        with self._lock:
+            self._conn.execute(
+                "UPDATE posts SET comments_status = 'error', comments_error = ? "
+                "WHERE post_id = ? AND collection_id = ?",
+                (error[:500], post_id, collection_id),
+            )
+            self._conn.commit()
+
+    def reset_comments(self, collection_id: int, post_id: str | None = None) -> int:
+        """Xoá bình luận đã lưu và đặt lại trạng thái để crawl lại."""
+        now = _now()
+        with self._lock:
+            if post_id:
+                self._conn.execute(
+                    "DELETE FROM comments WHERE collection_id = ? AND post_id = ?",
+                    (collection_id, post_id),
+                )
+                n = self._conn.execute(
+                    "UPDATE posts SET comments_status = 'pending', comments_saved = 0, "
+                    "comments_done_at = NULL, comments_error = NULL "
+                    "WHERE post_id = ? AND collection_id = ?",
+                    (post_id, collection_id),
+                ).rowcount
+            else:
+                self._conn.execute("DELETE FROM comments WHERE collection_id = ?", (collection_id,))
+                n = self._conn.execute(
+                    "UPDATE posts SET comments_status = 'pending', comments_saved = 0, "
+                    "comments_done_at = NULL, comments_error = NULL WHERE collection_id = ?",
+                    (collection_id,),
+                ).rowcount
+            self._conn.execute(
+                "UPDATE runs SET finished_at = ? WHERE finished_at IS NULL", (now,)
+            )
+            self._conn.commit()
+        return int(n)
+
+    def list_comments(
+        self,
+        collection_id: int,
+        post_id: str,
+        limit: int = 500,
+        offset: int = 0,
+    ) -> dict[str, Any]:
+        with self._lock:
+            total = int(
+                self._conn.execute(
+                    "SELECT COUNT(*) FROM comments WHERE collection_id = ? AND post_id = ?",
+                    (collection_id, post_id),
+                ).fetchone()[0]
+            )
+            rows = self._conn.execute(
+                "SELECT * FROM comments WHERE collection_id = ? AND post_id = ? "
+                "ORDER BY depth ASC, id ASC LIMIT ? OFFSET ?",
+                (collection_id, post_id, limit, offset),
+            ).fetchall()
+        return {"total": total, "comments": [_row_to_comment(row) for row in rows]}
+
+    def comment_progress(self, collection_id: int, min_comments: int = 2) -> dict[str, Any]:
+        with self._lock:
+            row = self._conn.execute(
+                """
+                SELECT
+                  COUNT(*) AS tong_bai,
+                  SUM(CASE WHEN comment_count >= ? AND permalink IS NOT NULL AND permalink != ''
+                           THEN 1 ELSE 0 END) AS du_dieu_lien_ket,
+                  SUM(CASE WHEN comments_status = 'done' THEN 1 ELSE 0 END) AS xong,
+                  SUM(CASE WHEN comments_status = 'error' THEN 1 ELSE 0 END) AS loi,
+                  SUM(CASE WHEN comments_status = 'pending' AND comment_count >= ?
+                                AND permalink IS NOT NULL AND permalink != ''
+                           THEN 1 ELSE 0 END) AS cho
+                FROM posts WHERE collection_id = ?
+                """,
+                (min_comments, min_comments, collection_id),
+            ).fetchone()
+            saved = int(
+                self._conn.execute(
+                    "SELECT COUNT(*) FROM comments WHERE collection_id = ?", (collection_id,)
+                ).fetchone()[0]
+            )
+        return {
+            "posts": int(row["tong_bai"] or 0),
+            "eligible": int(row["du_dieu_lien_ket"] or 0),
+            "done": int(row["xong"] or 0),
+            "error": int(row["loi"] or 0),
+            "pending": int(row["cho"] or 0),
+            "saved": saved,
+        }
+
     def _append_jsonl(self, saved: dict[str, Any]) -> None:
         line = {
             "page_url": saved["page_url"],
@@ -423,6 +640,24 @@ def _row_to_post(row: sqlite3.Row) -> dict[str, Any]:
         "permalink": row["permalink"],
         "id_unstable": bool(row["id_unstable"]),
         "collection_id": int(row["collection_id"]),
+        "comments_status": row["comments_status"],
+        "comments_saved": int(row["comments_saved"]),
+        "comments_done_at": row["comments_done_at"],
+        "comments_error": row["comments_error"],
         "first_seen_at": row["first_seen_at"],
         "updated_at": row["updated_at"],
+    }
+
+
+def _row_to_comment(row: sqlite3.Row) -> dict[str, Any]:
+    return {
+        "comment_id": row["comment_id"],
+        "post_id": row["post_id"],
+        "parent_id": row["parent_id"],
+        "depth": int(row["depth"]),
+        "author": row["author"],
+        "text": row["text"],
+        "created_at": row["created_at"],
+        "like_count": int(row["like_count"]),
+        "saved_at": row["saved_at"],
     }
