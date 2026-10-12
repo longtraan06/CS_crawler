@@ -96,7 +96,7 @@ def comments(
     db: Path = typer.Option(_db_option(), "--db"),
     profile: Path = typer.Option(_profile_option(), "--profile"),
     headless: bool = typer.Option(True, "--headless/--headed", help="Ẩn cửa sổ hay hiện cửa sổ Chromium"),
-    limit: int = typer.Option(0, "--limit", help="Giới hạn số bài (0 = hết cả collection)"),
+    limit: int = typer.Option(0, "--limit", help="Giới hạn số bài. Mặc định 0 = lấy hết cả collection"),
     retries: int = typer.Option(
         2,
         "--retries",
@@ -126,6 +126,11 @@ def comments(
             if progress["pending"] == 0:
                 typer.echo("không còn bài nào cần lấy bình luận.")
                 return 0
+            so_chay = min(progress["pending"], limit) if limit > 0 else progress["pending"]
+            typer.echo(f"sẽ lấy {so_chay} bài (ước khoảng {so_chay * 25 // 60} phút). "
+                       f"Thêm --limit N để giới hạn.")
+            if so_chay >= 300:
+                typer.echo("LƯU Ý: số bài khá nhiều, nên chia ra chạy vài lần.")
 
             source = PlaywrightSource(profile, headless=headless)
             await source.start("https://www.facebook.com/")

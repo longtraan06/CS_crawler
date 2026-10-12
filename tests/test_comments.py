@@ -332,6 +332,27 @@ def test_response_backpressure_bounded():
     asyncio.run(run())
 
 
+def test_no_hidden_post_limit(tmp_path):
+    """Không được lặng lẽ cắt ở 500 bài — mặc định phải lấy hết collection."""
+    store = _store(tmp_path)
+    for i in range(620):
+        store.upsert("http://x/p", _post(f"p{i}", 3), collection_id=1)
+    assert len(store.list_posts_needing_comments(1, 2)) == 620
+    assert len(store.list_posts_needing_comments(1, 2, limit=None)) == 620
+    assert len(store.list_posts_needing_comments(1, 2, limit=0)) == 620
+    assert len(store.list_posts_needing_comments(1, 2, limit=25)) == 25
+    store.close()
+
+
+def test_progress_counts_all_posts_not_limited(tmp_path):
+    """comment_progress phải đếm đủ, không bị giới hạn theo batch."""
+    store = _store(tmp_path)
+    for i in range(120):
+        store.upsert("http://x/p", _post(f"p{i}", 3), collection_id=1)
+    assert store.comment_progress(1, 2)["pending"] == 120
+    store.close()
+
+
 def test_retries_parameter_is_honoured():
     """Số lần thử lại phải do người dùng chọn được."""
     import inspect

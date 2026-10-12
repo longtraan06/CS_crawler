@@ -443,24 +443,31 @@ class Store:
         self,
         collection_id: int,
         min_comments: int = 2,
-        limit: int = 500,
+        limit: int | None = None,
         retry_errors: bool = True,
     ) -> list[dict[str, Any]]:
         """Bài chưa lấy bình luận, có đủ ngưỡng bình luận và có link để mở.
 
         Bài đánh dấu 'done' bị bỏ qua nên bấm Dừng giữa chừng rồi chạy tiếp sẽ
         không lặp lại bài đã xong.
+
+        ``limit`` bỏ trống (hoặc <= 0) nghĩa là lấy hết, không giới hạn.
         """
         sql = (
             "SELECT * FROM posts WHERE collection_id = ? AND comment_count >= ? "
             "AND permalink IS NOT NULL AND permalink != '' "
             "AND comments_status != 'done' "
         )
+        params: list[Any] = [collection_id, min_comments]
         if not retry_errors:
             sql += "AND comments_status != 'error' "
-        sql += "ORDER BY id DESC LIMIT ?"
+        sql += "ORDER BY id DESC"
+        if limit and limit > 0:
+            # -1 là "không giới hạn" với SQLite.
+            sql += " LIMIT ?"
+            params.append(limit)
         with self._lock:
-            rows = self._conn.execute(sql, (collection_id, min_comments, limit)).fetchall()
+            rows = self._conn.execute(sql, params).fetchall()
         return [_row_to_post(row) for row in rows]
 
     def save_comments(

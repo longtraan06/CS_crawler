@@ -177,6 +177,9 @@ pagecrawl comments --collection "tin-tuc" --min-comments 2
 
 Thêm `--limit 5` để chỉ lấy 5 bài, `--headed` để hiện cửa sổ trình duyệt.
 
+Mặc định lấy **hết** bài đang chờ trong collection, không giới hạn. Lúc bắt đầu
+tool sẽ báo trước còn bao nhiêu bài và ước chừng bao nhiêu phút.
+
 ### Cách chạy cho an toàn
 
 - Chạy **tuần tự từng bài**, nghỉ vài giây giữa mỗi bài.

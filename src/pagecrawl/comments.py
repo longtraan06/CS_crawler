@@ -601,7 +601,7 @@ async def crawl_comments(
     dừng giữa chừng rồi chạy tiếp sẽ tiếp tục từ chỗ còn dang dở.
     """
     pending = store.list_posts_needing_comments(
-        collection_id, min_comments=min_comments, limit=limit or 500
+        collection_id, min_comments=min_comments, limit=limit
     )
     if not pending:
         return 0
@@ -609,6 +609,14 @@ async def crawl_comments(
     crawler = CommentCrawler(source)
     total = len(pending)
     done = 0
+    if on_progress:
+        # Báo trước số bài và ước thời gian: một bài mất khoảng 15-40 giây tuỳ
+        # số bình luận, nên người dùng cần biết trước để quyết định có chạy nữa
+        # hay không.
+        approx = total * 25 / 60
+        het = f" (ước khoảng {approx:.0f} phút)" if approx >= 1 else ""
+        on_progress(f"còn {total} bài chưa lấy bình luận, sẽ xử lý hết{het}. "
+                    f"Dừng giữa chừng thì chạy lại tiếp tục từ bài kế tiếp.")
 
     for index, post in enumerate(pending, start=1):
         if source.blocked:
